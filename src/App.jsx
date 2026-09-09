@@ -93,31 +93,31 @@ export default function App() {
         必要なら微調整します。
       */
       const crops = [
-        {
-          key: "patients",
-          label: "実患者",
-          x: 0.392,
-          y: 0.035,
-          w: 0.038,
-          h: 0.755,
-        },
-        {
-          key: "insurance",
-          label: "保険診療分（点数）",
-          x: 0.462,
-          y: 0.035,
-          w: 0.080,
-          h: 0.755,
-        },
-        {
-          key: "care",
-          label: "その他保険診療分（介護保険・点数）",
-          x: 0.690,
-          y: 0.035,
-          w: 0.088,
-          h: 0.755,
-        },
-      ];
+  {
+    key: "patients",
+    label: "実患者",
+    x: 0.410,
+    y: 0.035,
+    w: 0.050,
+    h: 0.755,
+  },
+  {
+    key: "insurance",
+    label: "保険診療分（点数）",
+    x: 0.490,
+    y: 0.035,
+    w: 0.075,
+    h: 0.755,
+  },
+  {
+    key: "care",
+    label: "その他保険診療分（介護保険・点数）",
+    x: 0.710,
+    y: 0.035,
+    w: 0.070,
+    h: 0.755,
+  },
+];
 
       for (const file of files) {
         const cropResults = [];
