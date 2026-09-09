@@ -6,64 +6,36 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState("");
 
-  /*
-    画像全体に対する割合。
-
-    row1Center:
-      1日目の行の中心位置
-
-    rowStep:
-      1日進むごとの縦方向の間隔
-  */
   const [row1Center, setRow1Center] = useState(0.055);
   const [rowStep, setRowStep] = useState(0.0267);
 
   const inputRef = useRef(null);
 
-  /*
-    今回確認したい代表日。
+  const sampleDays = [7, 14, 21, 28];
 
-    実データが入っている日を選んでいるので、
-    位置が正しければ数字を目視しやすい。
-  */
-  const sampleDays = [
-    7,
-    12,
-    14,
-    19,
-    21,
-    26,
-    28,
-  ];
-
-  /*
-    横方向は、これまで確認した位置を使用。
-  */
   const columns = [
     {
       key: "patients",
       label: "実患者",
-      x: 0.438,
-      w: 0.030,
+      x: 0.425,
+      w: 0.045,
     },
     {
       key: "insurance",
       label: "保険診療分",
-      x: 0.495,
-      w: 0.055,
+      x: 0.485,
+      w: 0.085,
     },
     {
       key: "care",
       label: "介護保険",
-      x: 0.735,
-      w: 0.060,
+      x: 0.720,
+      w: 0.095,
     },
   ];
 
   function handleFiles(event) {
-    const selected = Array.from(
-      event.target.files || []
-    );
+    const selected = Array.from(event.target.files || []);
 
     setFiles(selected);
     setPreviews([]);
@@ -82,128 +54,64 @@ export default function App() {
 
       image.onerror = () => {
         URL.revokeObjectURL(url);
-        reject(
-          new Error("画像を読み込めませんでした")
-        );
+        reject(new Error("画像を読み込めませんでした"));
       };
 
       image.src = url;
     });
   }
 
-  function createDayPreview(image, day) {
-    /*
-      対象日の中心位置。
-    */
+  function createSingleCellPreview(image, day, column) {
     const centerY =
-      image.height *
-      (
-        row1Center +
-        (day - 1) * rowStep
-      );
+      image.height * (row1Center + (day - 1) * rowStep);
 
-    /*
-      1行分だけ切り出す。
-
-      行間隔の約72%を使い、
-      上下の隣接行をなるべく入れない。
-    */
     const rowHeight =
-      image.height *
-      rowStep *
-      0.72;
+      image.height * rowStep * 0.72;
 
-    const sourceY =
-      centerY - rowHeight / 2;
+    const sourceY = centerY - rowHeight / 2;
 
-    /*
-      3セルを横に並べた確認画像を作る。
-    */
+    const sourceX = image.width * column.x;
+    const sourceWidth = image.width * column.w;
+
     const scale = 3;
 
-    const gap = 18;
+    const canvas = document.createElement("canvas");
 
-    const widths = columns.map(
-      (column) =>
-        Math.floor(
-          image.width *
-          column.w *
-          scale
-        )
+    canvas.width = Math.max(
+      120,
+      Math.floor(sourceWidth * scale)
     );
 
-    const outputHeight =
-      Math.max(
-        45,
-        Math.floor(
-          rowHeight * scale
-        )
-      );
+    canvas.height = Math.max(
+      60,
+      Math.floor(rowHeight * scale)
+    );
 
-    const outputWidth =
-      widths.reduce(
-        (sum, value) => sum + value,
-        0
-      ) +
-      gap * (columns.length - 1);
-
-    const canvas =
-      document.createElement("canvas");
-
-    canvas.width = outputWidth;
-    canvas.height = outputHeight;
-
-    const ctx =
-      canvas.getContext("2d");
+    const ctx = canvas.getContext("2d");
 
     ctx.fillStyle = "#ffffff";
-    ctx.fillRect(
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    ctx.drawImage(
+      image,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      rowHeight,
       0,
       0,
       canvas.width,
       canvas.height
     );
 
-    let destinationX = 0;
-
-    columns.forEach(
-      (column, index) => {
-        const sourceX =
-          image.width * column.x;
-
-        const sourceWidth =
-          image.width * column.w;
-
-        const destinationWidth =
-          widths[index];
-
-        ctx.drawImage(
-          image,
-          sourceX,
-          sourceY,
-          sourceWidth,
-          rowHeight,
-          destinationX,
-          0,
-          destinationWidth,
-          outputHeight
-        );
-
-        destinationX +=
-          destinationWidth + gap;
-      }
-    );
-
-    return canvas.toDataURL(
-      "image/jpeg",
-      0.95
-    );
+    return canvas.toDataURL("image/jpeg", 0.95);
   }
 
   async function makePreviews() {
-    if (files.length === 0) {
-      return;
-    }
+    if (files.length === 0) return;
 
     setIsProcessing(true);
     setError("");
@@ -212,25 +120,25 @@ export default function App() {
     try {
       const output = [];
 
-      for (
-        let fileIndex = 0;
-        fileIndex < files.length;
-        fileIndex++
-      ) {
-        const file = files[fileIndex];
+      for (const file of files) {
+        const image = await loadImage(file);
 
-        const image =
-          await loadImage(file);
-
-        const rows =
-          sampleDays.map((day) => ({
-            day,
-            imageUrl:
-              createDayPreview(
-                image,
-                day
-              ),
+        const rows = sampleDays.map((day) => {
+          const cells = columns.map((column) => ({
+            key: column.key,
+            label: column.label,
+            imageUrl: createSingleCellPreview(
+              image,
+              day,
+              column
+            ),
           }));
+
+          return {
+            day,
+            cells,
+          };
+        });
 
         output.push({
           fileName: file.name,
@@ -243,10 +151,7 @@ export default function App() {
       setPreviews(output);
     } catch (e) {
       console.error(e);
-
-      setError(
-        "切り抜き確認画像の作成に失敗しました。"
-      );
+      setError("切り抜き確認画像の作成に失敗しました。");
     } finally {
       setIsProcessing(false);
     }
@@ -256,38 +161,24 @@ export default function App() {
     <main className="page">
       <section className="app">
         <header>
-          <div className="logo">
-            歯
-          </div>
+          <div className="logo">歯</div>
 
           <div>
-            <h1>
-              訪問診療OCR
-            </h1>
-
-            <p>
-              診療日別集計表 → Excel
-            </p>
+            <h1>訪問診療OCR</h1>
+            <p>診療日別集計表 → Excel</p>
           </div>
         </header>
 
         <div className="privacy">
-          🔒
-          画像・診療データはサーバーに保存されません
+          🔒 画像・診療データはサーバーに保存されません
         </div>
 
         <section className="card">
-          <span className="step">
-            STEP 1
-          </span>
-
-          <h2>
-            スクリーンショットを選択
-          </h2>
+          <span className="step">STEP 1</span>
+          <h2>スクリーンショットを選択</h2>
 
           <p className="description">
-            今回はOCRせず、
-            1日ごとの行位置だけ確認します。
+            今回は7・14・21・28日の4日だけ確認します。
           </p>
 
           <input
@@ -301,9 +192,7 @@ export default function App() {
           <button
             className="select-button"
             disabled={isProcessing}
-            onClick={() =>
-              inputRef.current?.click()
-            }
+            onClick={() => inputRef.current?.click()}
           >
             ＋ スクリーンショットを選択
           </button>
@@ -316,24 +205,10 @@ export default function App() {
         </section>
 
         <section className="card">
-          <span className="step">
-            STEP 2
-          </span>
+          <span className="step">STEP 2</span>
+          <h2>行位置を調整</h2>
 
-          <h2>
-            行位置を調整
-          </h2>
-
-          <p className="description">
-            まず初期値のまま確認してください。
-            ズレている場合だけスライダーを調整します。
-          </p>
-
-          <div
-            style={{
-              marginTop: "20px",
-            }}
-          >
+          <div style={{ marginTop: "18px" }}>
             <label
               style={{
                 display: "block",
@@ -341,8 +216,7 @@ export default function App() {
                 marginBottom: "8px",
               }}
             >
-              1日目の位置：
-              {row1Center.toFixed(4)}
+              1日目の位置：{row1Center.toFixed(4)}
             </label>
 
             <input
@@ -352,23 +226,13 @@ export default function App() {
               step="0.0005"
               value={row1Center}
               onChange={(event) =>
-                setRow1Center(
-                  Number(
-                    event.target.value
-                  )
-                )
+                setRow1Center(Number(event.target.value))
               }
-              style={{
-                width: "100%",
-              }}
+              style={{ width: "100%" }}
             />
           </div>
 
-          <div
-            style={{
-              marginTop: "24px",
-            }}
-          >
+          <div style={{ marginTop: "24px" }}>
             <label
               style={{
                 display: "block",
@@ -376,8 +240,7 @@ export default function App() {
                 marginBottom: "8px",
               }}
             >
-              行間隔：
-              {rowStep.toFixed(4)}
+              行間隔：{rowStep.toFixed(4)}
             </label>
 
             <input
@@ -387,15 +250,9 @@ export default function App() {
               step="0.0002"
               value={rowStep}
               onChange={(event) =>
-                setRowStep(
-                  Number(
-                    event.target.value
-                  )
-                )
+                setRowStep(Number(event.target.value))
               }
-              style={{
-                width: "100%",
-              }}
+              style={{ width: "100%" }}
             />
           </div>
 
@@ -405,31 +262,25 @@ export default function App() {
                 ? "select-button"
                 : "disabled-button"
             }
-            disabled={
-              files.length === 0 ||
-              isProcessing
-            }
+            disabled={files.length === 0 || isProcessing}
             onClick={makePreviews}
-            style={{
-              marginTop: "26px",
-            }}
+            style={{ marginTop: "26px" }}
           >
             {isProcessing
               ? "作成中…"
-              : "行位置を確認"}
+              : "4日分を確認"}
           </button>
 
           <p
             style={{
-              margin:
-                "14px 0 0",
+              margin: "14px 0 0",
               color: "#64748b",
               fontSize: "12px",
               lineHeight: 1.6,
             }}
           >
-            スライダーを変更したら、
-            もう一度「行位置を確認」を押してください。
+            7日は合っていて28日がズレる場合は、
+            「行間隔」を調整してください。
           </p>
 
           {error && (
@@ -439,105 +290,99 @@ export default function App() {
           )}
         </section>
 
-        {previews.map(
-          (item, fileIndex) => (
-            <section
-              className="card"
-              key={`${item.fileName}-${fileIndex}`}
+        {previews.map((item, fileIndex) => (
+          <section
+            className="card"
+            key={`${item.fileName}-${fileIndex}`}
+          >
+            <span className="step">STEP 3</span>
+            <h2>4日×3列の切り抜き確認</h2>
+
+            <div
+              style={{
+                marginBottom: "18px",
+                padding: "10px",
+                background: "#f8fafc",
+                borderRadius: "10px",
+                fontSize: "12px",
+                color: "#64748b",
+              }}
             >
-              <span className="step">
-                STEP 3
-              </span>
+              元画像：{item.width} × {item.height}
+            </div>
 
-              <h2>
-                1日単位の切り抜き確認
-              </h2>
-
-              <p className="description">
-                左から
-                「実患者 / 保険診療分 /
-                介護保険」です。
-              </p>
-
+            {item.rows.map((row) => (
               <div
+                key={row.day}
                 style={{
-                  marginBottom: "18px",
-                  padding: "10px",
-                  background: "#f8fafc",
-                  borderRadius: "10px",
-                  fontSize: "12px",
-                  color: "#64748b",
+                  marginBottom: "30px",
                 }}
               >
-                元画像：
-                {item.width}
-                ×
-                {item.height}
-              </div>
+                <div
+                  style={{
+                    fontSize: "18px",
+                    fontWeight: 800,
+                    marginBottom: "10px",
+                  }}
+                >
+                  {row.day}日
+                </div>
 
-              {item.rows.map(
-                (row) => (
-                  <div
-                    key={row.day}
-                    style={{
-                      marginBottom:
-                        "24px",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize:
-                          "17px",
-                        fontWeight:
-                          800,
-                        marginBottom:
-                          "8px",
-                      }}
-                    >
-                      {row.day}日
-                    </div>
-
-                    <div
-                      style={{
-                        padding:
-                          "10px",
-                        background:
-                          "#f8fafc",
-                        border:
-                          "1px solid #cbd5e1",
-                        borderRadius:
-                          "12px",
-                        overflowX:
-                          "auto",
-                      }}
-                    >
-                      <img
-                        src={
-                          row.imageUrl
-                        }
-                        alt={`${row.day}日`}
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "repeat(3, minmax(0, 1fr))",
+                    gap: "10px",
+                  }}
+                >
+                  {row.cells.map((cell) => (
+                    <div key={cell.key}>
+                      <div
                         style={{
-                          display:
-                            "block",
-                          maxWidth:
-                            "none",
-                          height:
-                            "72px",
-                          width:
-                            "auto",
+                          fontSize: "12px",
+                          fontWeight: 700,
+                          marginBottom: "6px",
+                          textAlign: "center",
                         }}
-                      />
+                      >
+                        {cell.label}
+                      </div>
+
+                      <div
+                        style={{
+                          border: "1px solid #cbd5e1",
+                          borderRadius: "10px",
+                          background: "#f8fafc",
+                          padding: "6px",
+                          minHeight: "86px",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          overflow: "hidden",
+                        }}
+                      >
+                        <img
+                          src={cell.imageUrl}
+                          alt={`${row.day}日 ${cell.label}`}
+                          style={{
+                            maxWidth: "100%",
+                            maxHeight: "74px",
+                            objectFit: "contain",
+                            display: "block",
+                          }}
+                        />
+                      </div>
                     </div>
-                  </div>
-                )
-              )}
-            </section>
-          )
-        )}
+                  ))}
+                </div>
+              </div>
+            ))}
+          </section>
+        ))}
 
         <footer>
-          行位置が決まったら、
-          次に1日単位OCRへ進みます
+          4日分が合えば、次は1日単位OCRへ進みます
         </footer>
       </section>
     </main>
