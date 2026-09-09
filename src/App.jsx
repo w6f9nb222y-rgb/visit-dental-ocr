@@ -2,10 +2,10 @@ import { useRef, useState } from "react";
 import { createWorker } from "tesseract.js";
 
 export default function App() {
-  const [files, setFiles] = useState([]);
+  const [file, setFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [progress, setProgress] = useState(0);
   const [statusText, setStatusText] = useState("");
+  const [progress, setProgress] = useState(0);
   const [results, setResults] = useState([]);
   const [elapsed, setElapsed] = useState(null);
   const [error, setError] = useState("");
@@ -13,108 +13,51 @@ export default function App() {
   const inputRef = useRef(null);
 
   /*
-   * -------------------------------------------------------
-   * 帳票位置
-   * -------------------------------------------------------
-   *
-   * 横位置は前回スライダーで合わせた値を使用。
-   *
-   * Y方向は、以前確認できた
-   * 7日・14日・21日・28日
-   * が等間隔に並んでいることを利用して計算する。
-   *
-   * 7日付近 ≒ 0.1745
-   * 14日付近 ≒ 0.3250
-   * 21日付近 ≒ 0.4755
-   * 28日付近 ≒ 0.6260
-   *
-   * → 1日あたり約0.0215
+   * =====================================================
+   * 前に目視確認で合っていた縦位置
+   * =====================================================
    */
 
-  const columns = {
+  const ROW_1_CENTER = 0.0550;
+  const ROW_STEP = 0.0267;
+
+  /*
+   * =====================================================
+   * スライダーで合わせた横位置
+   * =====================================================
+   */
+
+  const COLUMNS = {
     patients: {
       label: "実患者",
-      x: 0.482,
-      w: 0.030,
+      x: 0.4820,
+      w: 0.0300,
     },
 
     insurance: {
       label: "保険診療分",
-      x: 0.528,
-      w: 0.070,
+      x: 0.5280,
+      w: 0.0700,
     },
 
     care: {
       label: "介護保険",
-      x: 0.797,
-      w: 0.060,
+      x: 0.7970,
+      w: 0.0600,
     },
   };
 
   /*
-   * 7・14・21・28日から求めた固定行位置
+   * 今回はこの4日だけ。
    */
-  const anchorRows = [
-    { day: 7, y: 0.1745 },
-    { day: 14, y: 0.3250 },
-    { day: 21, y: 0.4755 },
-    { day: 28, y: 0.6260 },
-  ];
+  const TEST_DAYS = [7, 14, 21, 28];
 
-  /*
-   * 最小二乗法で
-   *
-   * y = intercept + slope * (day - 1)
-   *
-   * を求める。
-   */
-  function calculateRowModel() {
-    const xs = anchorRows.map((row) => row.day - 1);
-    const ys = anchorRows.map((row) => row.y);
+  function handleFile(event) {
+    const selected = event.target.files?.[0];
 
-    const meanX =
-      xs.reduce((sum, value) => sum + value, 0) /
-      xs.length;
+    if (!selected) return;
 
-    const meanY =
-      ys.reduce((sum, value) => sum + value, 0) /
-      ys.length;
-
-    let numerator = 0;
-    let denominator = 0;
-
-    for (let i = 0; i < xs.length; i++) {
-      numerator +=
-        (xs[i] - meanX) *
-        (ys[i] - meanY);
-
-      denominator +=
-        (xs[i] - meanX) *
-        (xs[i] - meanX);
-    }
-
-    const slope = numerator / denominator;
-    const intercept = meanY - slope * meanX;
-
-    return {
-      intercept,
-      slope,
-    };
-  }
-
-  const rowModel = calculateRowModel();
-
-  /*
-   * -------------------------------------------------------
-   * ファイル選択
-   * -------------------------------------------------------
-   */
-
-  function handleFiles(event) {
-    const selected =
-      Array.from(event.target.files || []);
-
-    setFiles(selected);
+    setFile(selected);
     setResults([]);
     setElapsed(null);
     setProgress(0);
@@ -122,273 +65,448 @@ export default function App() {
     setError("");
   }
 
-  /*
-   * -------------------------------------------------------
-   * 1セル切り抜き
-   * -------------------------------------------------------
-   */
-
-  function cropCell(file, column, day) {
+  function loadImage(file) {
     return new Promise((resolve, reject) => {
-      const img = new Image();
+      const image = new Image();
       const url = URL.createObjectURL(file);
 
-      img.onload = () => {
-        try {
-          /*
-           * その日の中央Y座標
-           */
-          const centerY =
-            rowModel.intercept +
-            rowModel.slope * (day - 1);
-
-          /*
-           * 行間隔の約70%だけ切り抜く。
-           * 上下の行が入り込まないようにする。
-           */
-          const cropHeight =
-            rowModel.slope * 0.70;
-
-          const x1 =
-            Math.max(0, column.x);
-
-          const x2 =
-            Math.min(
-              1,
-              column.x + column.w
-            );
-
-          const y1 =
-            Math.max(
-              0,
-              centerY - cropHeight / 2
-            );
-
-          const y2 =
-            Math.min(
-              1,
-              centerY + cropHeight / 2
-            );
-
-          const sx =
-            Math.floor(img.width * x1);
-
-          const sy =
-            Math.floor(img.height * y1);
-
-          const sw =
-            Math.max(
-              1,
-              Math.floor(
-                img.width * (x2 - x1)
-              )
-            );
-
-          const sh =
-            Math.max(
-              1,
-              Math.floor(
-                img.height * (y2 - y1)
-              )
-            );
-
-          /*
-           * OCR用に拡大
-           */
-          const scale = 4;
-
-          const canvas =
-            document.createElement("canvas");
-
-          canvas.width =
-            Math.floor(sw * scale);
-
-          canvas.height =
-            Math.floor(sh * scale);
-
-          const ctx =
-            canvas.getContext("2d", {
-              willReadFrequently: true,
-            });
-
-          /*
-           * 白背景
-           */
-          ctx.fillStyle = "#ffffff";
-
-          ctx.fillRect(
-            0,
-            0,
-            canvas.width,
-            canvas.height
-          );
-
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = "high";
-
-          ctx.drawImage(
-            img,
-            sx,
-            sy,
-            sw,
-            sh,
-            0,
-            0,
-            canvas.width,
-            canvas.height
-          );
-
-          /*
-           * グレースケール
-           */
-          const imageData =
-            ctx.getImageData(
-              0,
-              0,
-              canvas.width,
-              canvas.height
-            );
-
-          const data = imageData.data;
-
-          /*
-           * 固定2値化ではなく
-           * コントラスト強調。
-           *
-           * モアレの影響を減らしつつ
-           * 数字の形を残す。
-           */
-          for (
-            let i = 0;
-            i < data.length;
-            i += 4
-          ) {
-            const gray =
-              data[i] * 0.299 +
-              data[i + 1] * 0.587 +
-              data[i + 2] * 0.114;
-
-            let value =
-              (gray - 128) * 1.8 + 128;
-
-            value =
-              Math.max(
-                0,
-                Math.min(255, value)
-              );
-
-            data[i] = value;
-            data[i + 1] = value;
-            data[i + 2] = value;
-            data[i + 3] = 255;
-          }
-
-          ctx.putImageData(
-            imageData,
-            0,
-            0
-          );
-
-          canvas.toBlob(
-            (blob) => {
-              URL.revokeObjectURL(url);
-
-              if (!blob) {
-                reject(
-                  new Error(
-                    "セル画像の作成に失敗しました"
-                  )
-                );
-
-                return;
-              }
-
-              resolve(blob);
-            },
-            "image/png",
-            1
-          );
-        } catch (e) {
-          URL.revokeObjectURL(url);
-          reject(e);
-        }
+      image.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(image);
       };
 
-      img.onerror = () => {
+      image.onerror = () => {
         URL.revokeObjectURL(url);
-
         reject(
-          new Error(
-            "画像を読み込めませんでした"
-          )
+          new Error("画像を読み込めませんでした")
         );
       };
 
-      img.src = url;
+      image.src = url;
     });
   }
 
   /*
-   * -------------------------------------------------------
-   * OCR結果を数字に変換
-   * -------------------------------------------------------
+   * =====================================================
+   * OCR用セル画像作成
+   * =====================================================
+   *
+   * ポイント：
+   *
+   * ・以前うまく見えていた座標をそのまま使用
+   * ・上下の隣接行を入れない
+   * ・表の縦罫線を自動的に消す
+   * ・モニター撮影のモアレを少し抑える
+   * ・数字を大きくしてOCR
    */
 
-  function normalizeNumber(text) {
-    if (!text) return "";
+  function makeCellCanvas(
+    image,
+    day,
+    columnKey
+  ) {
+    const column = COLUMNS[columnKey];
 
-    let value = text
-      .replace(/\s/g, "")
-      .replace(/[^\d,]/g, "");
+    const centerY =
+      image.height *
+      (
+        ROW_1_CENTER +
+        (day - 1) * ROW_STEP
+      );
 
     /*
-     * カンマだけなら空欄
+     * 行の高さ。
+     *
+     * 前後の行を拾わないよう、
+     * 行間隔の約62%。
      */
-    if (!/\d/.test(value)) {
+    const sourceHeight =
+      image.height *
+      ROW_STEP *
+      0.62;
+
+    let sourceX =
+      image.width * column.x;
+
+    let sourceWidth =
+      image.width * column.w;
+
+    /*
+     * 列端の罫線を少し除外。
+     *
+     * 実患者は幅が狭いので少なめ。
+     */
+    const sideTrim =
+      columnKey === "patients"
+        ? 0.06
+        : 0.045;
+
+    sourceX +=
+      sourceWidth * sideTrim;
+
+    sourceWidth *=
+      1 - sideTrim * 2;
+
+    const sourceY =
+      centerY -
+      sourceHeight / 2;
+
+    /*
+     * まず原寸に近い中間Canvasを作る。
+     */
+    const base =
+      document.createElement("canvas");
+
+    base.width =
+      Math.max(
+        20,
+        Math.round(sourceWidth)
+      );
+
+    base.height =
+      Math.max(
+        15,
+        Math.round(sourceHeight)
+      );
+
+    const baseCtx =
+      base.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    baseCtx.fillStyle = "#ffffff";
+    baseCtx.fillRect(
+      0,
+      0,
+      base.width,
+      base.height
+    );
+
+    /*
+     * モアレ軽減のため少し平滑化。
+     */
+    baseCtx.imageSmoothingEnabled = true;
+    baseCtx.imageSmoothingQuality = "high";
+
+    baseCtx.drawImage(
+      image,
+      sourceX,
+      sourceY,
+      sourceWidth,
+      sourceHeight,
+      0,
+      0,
+      base.width,
+      base.height
+    );
+
+    /*
+     * グレースケール＋軽いコントラスト。
+     */
+    const imageData =
+      baseCtx.getImageData(
+        0,
+        0,
+        base.width,
+        base.height
+      );
+
+    const pixels =
+      imageData.data;
+
+    for (
+      let i = 0;
+      i < pixels.length;
+      i += 4
+    ) {
+      const gray =
+        pixels[i] * 0.299 +
+        pixels[i + 1] * 0.587 +
+        pixels[i + 2] * 0.114;
+
+      /*
+       * 強すぎる2値化はしない。
+       */
+      let value =
+        (gray - 128) * 1.45 + 128;
+
+      value =
+        Math.max(
+          0,
+          Math.min(255, value)
+        );
+
+      /*
+       * 明るい背景は少し白へ。
+       */
+      if (value > 185) {
+        value =
+          Math.min(
+            255,
+            value + 18
+          );
+      }
+
+      pixels[i] = value;
+      pixels[i + 1] = value;
+      pixels[i + 2] = value;
+      pixels[i + 3] = 255;
+    }
+
+    baseCtx.putImageData(
+      imageData,
+      0,
+      0
+    );
+
+    /*
+     * ===================================================
+     * 縦罫線を除去
+     * ===================================================
+     *
+     * 1列の大部分が黒ければ
+     * 表の縦線と判断して白くする。
+     */
+
+    const cleaned =
+      baseCtx.getImageData(
+        0,
+        0,
+        base.width,
+        base.height
+      );
+
+    const cleanedPixels =
+      cleaned.data;
+
+    for (
+      let x = 0;
+      x < base.width;
+      x++
+    ) {
+      let darkCount = 0;
+
+      for (
+        let y = 0;
+        y < base.height;
+        y++
+      ) {
+        const index =
+          (y * base.width + x) * 4;
+
+        const value =
+          cleanedPixels[index];
+
+        if (value < 95) {
+          darkCount++;
+        }
+      }
+
+      /*
+       * 高さの65%以上が暗いなら
+       * 縦罫線の可能性が高い。
+       */
+      if (
+        darkCount /
+          base.height >
+        0.65
+      ) {
+        /*
+         * 罫線は1〜数pxあることがあるため
+         * 左右1pxも白にする。
+         */
+        for (
+          let dx = -1;
+          dx <= 1;
+          dx++
+        ) {
+          const targetX =
+            x + dx;
+
+          if (
+            targetX < 0 ||
+            targetX >= base.width
+          ) {
+            continue;
+          }
+
+          for (
+            let y = 0;
+            y < base.height;
+            y++
+          ) {
+            const index =
+              (
+                y *
+                  base.width +
+                targetX
+              ) *
+              4;
+
+            cleanedPixels[index] = 255;
+            cleanedPixels[index + 1] = 255;
+            cleanedPixels[index + 2] = 255;
+            cleanedPixels[index + 3] = 255;
+          }
+        }
+      }
+    }
+
+    baseCtx.putImageData(
+      cleaned,
+      0,
+      0
+    );
+
+    /*
+     * ===================================================
+     * OCR用に拡大
+     * ===================================================
+     */
+
+    const scale =
+      columnKey === "patients"
+        ? 7
+        : 5;
+
+    const output =
+      document.createElement("canvas");
+
+    output.width =
+      Math.max(
+        220,
+        base.width * scale
+      );
+
+    output.height =
+      Math.max(
+        100,
+        base.height * scale
+      );
+
+    const outputCtx =
+      output.getContext("2d");
+
+    outputCtx.fillStyle = "#ffffff";
+
+    outputCtx.fillRect(
+      0,
+      0,
+      output.width,
+      output.height
+    );
+
+    outputCtx.imageSmoothingEnabled = true;
+    outputCtx.imageSmoothingQuality = "high";
+
+    outputCtx.drawImage(
+      base,
+      0,
+      0,
+      output.width,
+      output.height
+    );
+
+    return output;
+  }
+
+  function canvasToBlob(canvas) {
+    return new Promise(
+      (resolve, reject) => {
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(
+                new Error(
+                  "画像変換に失敗しました"
+                )
+              );
+
+              return;
+            }
+
+            resolve(blob);
+          },
+          "image/png",
+          1
+        );
+      }
+    );
+  }
+
+  function normalizeNumber(text) {
+    const raw =
+      String(text || "")
+        .trim();
+
+    const cleaned =
+      raw
+        .replace(/\s/g, "")
+        .replace(/[^\d,]/g, "");
+
+    if (!/\d/.test(cleaned)) {
       return "";
     }
 
-    /*
-     * カンマを除去
-     *
-     * 11,484 → 11484
-     */
-    value =
-      value.replace(/,/g, "");
-
-    /*
-     * 先頭0除去
-     * ただし0そのものは残す
-     */
-    if (/^0+\d+$/.test(value)) {
-      value =
-        String(
-          Number(value)
-        );
-    }
-
-    return value;
+    return cleaned;
   }
 
-  /*
-   * -------------------------------------------------------
-   * OCR
-   * -------------------------------------------------------
-   */
+  async function recognizeCell(
+    worker,
+    canvas,
+    columnKey
+  ) {
+    const blob =
+      await canvasToBlob(canvas);
 
-  async function analyzeImages() {
+    /*
+     * PSM 8 = 1単語。
+     *
+     * 今回のセルOCRでは
+     * PSM 7（1行）より適しています。
+     */
+    await worker.setParameters({
+      tessedit_char_whitelist:
+        columnKey === "patients"
+          ? "0123456789"
+          : "0123456789,",
+
+      tessedit_pageseg_mode: "8",
+
+      preserve_interword_spaces:
+        "0",
+
+      user_defined_dpi: "300",
+    });
+
+    const result =
+      await worker.recognize(blob);
+
+    const raw =
+      String(
+        result.data.text || ""
+      ).trim();
+
+    return {
+      raw,
+      normalized:
+        normalizeNumber(raw),
+    };
+  }
+
+  async function analyzeImage() {
     if (
-      files.length === 0 ||
+      !file ||
       isAnalyzing
     ) {
       return;
     }
 
     setIsAnalyzing(true);
-    setProgress(0);
     setResults([]);
     setElapsed(null);
     setError("");
+    setProgress(0);
 
     const started =
       performance.now();
@@ -397,131 +515,121 @@ export default function App() {
 
     try {
       setStatusText(
+        "画像を準備しています…"
+      );
+
+      const image =
+        await loadImage(file);
+
+      setStatusText(
         "OCRエンジンを準備しています…"
       );
 
       worker =
         await createWorker(
           "eng",
-          1,
-          {
-            logger: () => {},
-          }
+          1
         );
-
-      /*
-       * 1セル = 1個の数字
-       */
-      await worker.setParameters({
-        tessedit_char_whitelist:
-          "0123456789,",
-
-        tessedit_pageseg_mode:
-          "7",
-
-        preserve_interword_spaces:
-          "0",
-      });
 
       const output = [];
 
-      const totalCells =
-        files.length *
-        31 *
-        3;
+      const total =
+        TEST_DAYS.length * 3;
 
-      let completedCells = 0;
+      let completed = 0;
 
       for (
-        let fileIndex = 0;
-        fileIndex < files.length;
-        fileIndex++
+        const day of TEST_DAYS
       ) {
-        const file =
-          files[fileIndex];
-
-        const rows = [];
+        const row = {
+          day,
+          cells: [],
+        };
 
         for (
-          let day = 1;
-          day <= 31;
-          day++
+          const columnKey of [
+            "patients",
+            "insurance",
+            "care",
+          ]
         ) {
-          const row = {
-            day,
-            patients: "",
-            insurance: "",
-            care: "",
-          };
+          const column =
+            COLUMNS[columnKey];
 
-          for (
-            const key of [
-              "patients",
-              "insurance",
-              "care",
-            ]
-          ) {
-            const column =
-              columns[key];
+          setStatusText(
+            `${day}日：${column.label}を解析中…`
+          );
 
-            setStatusText(
-              `${fileIndex + 1}/${files.length}枚目：` +
-              `${day}日 ${column.label}`
+          /*
+           * OCRへ渡すCanvasそのもの。
+           */
+          const canvas =
+            makeCellCanvas(
+              image,
+              day,
+              columnKey
             );
 
-            const blob =
-              await cropCell(
-                file,
-                column,
-                day
-              );
-
-            const result =
-              await worker.recognize(
-                blob
-              );
-
-            row[key] =
-              normalizeNumber(
-                result.data.text
-              );
-
-            completedCells++;
-
-            setProgress(
-              Math.round(
-                (completedCells /
-                  totalCells) *
-                  100
-              )
+          /*
+           * 画面確認用。
+           */
+          const preview =
+            canvas.toDataURL(
+              "image/png"
             );
-          }
 
-          rows.push(row);
+          const recognized =
+            await recognizeCell(
+              worker,
+              canvas,
+              columnKey
+            );
+
+          row.cells.push({
+            key: columnKey,
+            label:
+              column.label,
+            preview,
+            raw:
+              recognized.raw,
+            value:
+              recognized.normalized,
+          });
+
+          completed++;
+
+          setProgress(
+            Math.round(
+              (
+                completed /
+                total
+              ) *
+                100
+            )
+          );
         }
 
-        output.push({
-          fileName: file.name,
-          rows,
-        });
+        output.push(row);
       }
 
       const finished =
         performance.now();
 
+      setResults(output);
+
       setElapsed(
         (
-          (finished - started) /
+          (finished -
+            started) /
           1000
         ).toFixed(1)
       );
 
-      setResults(output);
-      setProgress(100);
-
       setStatusText(
         "解析が完了しました"
       );
+
+      setProgress(100);
     } catch (e) {
       console.error(e);
 
@@ -539,16 +647,9 @@ export default function App() {
     }
   }
 
-  /*
-   * -------------------------------------------------------
-   * 表示
-   * -------------------------------------------------------
-   */
-
   return (
     <main className="page">
       <section className="app">
-
         <header>
           <div className="logo">
             歯
@@ -566,7 +667,8 @@ export default function App() {
         </header>
 
         <div className="privacy">
-          🔒 画像・診療データは
+          🔒
+          画像・診療データは
           サーバーに保存されません
         </div>
 
@@ -579,18 +681,26 @@ export default function App() {
             スクリーンショットを選択
           </h2>
 
+          <p className="description">
+            今回は7・14・21・28日の
+            4日だけを検証します。
+          </p>
+
           <input
             ref={inputRef}
             className="hidden-input"
             type="file"
             accept="image/*"
-            multiple
-            onChange={handleFiles}
+            onChange={
+              handleFile
+            }
           />
 
           <button
             className="select-button"
-            disabled={isAnalyzing}
+            disabled={
+              isAnalyzing
+            }
             onClick={() =>
               inputRef.current?.click()
             }
@@ -598,50 +708,48 @@ export default function App() {
             ＋ スクリーンショットを選択
           </button>
 
-          {files.length > 0 && (
+          {file && (
             <div className="selected">
-              <strong>
-                {files.length}枚
-              </strong>
-              選択しました
+              {file.name}
             </div>
           )}
         </section>
 
         <section className="card">
-
           <span className="step">
             STEP 2
           </span>
 
           <h2>
-            日別データを解析
+            セルOCR検証
           </h2>
 
           <p className="description">
-            1〜31日を1セルずつ読み取ります。
+            OCRへ渡した画像そのものと、
+            認識結果を同時に表示します。
           </p>
 
           <button
             className={
-              files.length > 0
+              file
                 ? "select-button"
                 : "disabled-button"
             }
             disabled={
-              files.length === 0 ||
+              !file ||
               isAnalyzing
             }
-            onClick={analyzeImages}
+            onClick={
+              analyzeImage
+            }
           >
             {isAnalyzing
               ? "解析中…"
-              : "日別データを解析"}
+              : "4日分を解析"}
           </button>
 
           {statusText && (
             <div className="ocr-status">
-
               <p>
                 {statusText}
               </p>
@@ -655,7 +763,6 @@ export default function App() {
                   }}
                 />
               </div>
-
             </div>
           )}
 
@@ -673,251 +780,184 @@ export default function App() {
               {error}
             </div>
           )}
-
         </section>
 
-        {results.map(
-          (result, resultIndex) => (
+        {results.length > 0 && (
+          <section className="card">
+            <span className="step">
+              STEP 3
+            </span>
 
-            <section
-              className="card"
-              key={
-                `${result.fileName}-${resultIndex}`
-              }
-            >
+            <h2>
+              OCR入力画像と結果
+            </h2>
 
-              <span className="step">
-                STEP 3
-              </span>
+            <p className="description">
+              画像の数字と下のOCR結果が
+              一致するか確認してください。
+            </p>
 
-              <h2>
-                日別集計結果
-              </h2>
-
-              <p className="description">
-                {result.fileName}
-              </p>
-
-              <div
-                style={{
-                  overflowX: "auto",
-                }}
-              >
-
-                <table
+            {results.map(
+              (row) => (
+                <div
+                  key={row.day}
                   style={{
-                    width: "100%",
-                    borderCollapse:
-                      "collapse",
-                    minWidth: "650px",
+                    marginBottom:
+                      "34px",
                   }}
                 >
+                  <h3
+                    style={{
+                      fontSize:
+                        "22px",
+                      marginBottom:
+                        "14px",
+                    }}
+                  >
+                    {row.day}日
+                  </h3>
 
-                  <thead>
-                    <tr>
-                      <th style={cellStyle}>
-                        日付
-                      </th>
-
-                      <th style={cellStyle}>
-                        実患者
-                      </th>
-
-                      <th style={cellStyle}>
-                        保険診療分
-                      </th>
-
-                      <th style={cellStyle}>
-                        介護保険
-                      </th>
-
-                      <th style={cellStyle}>
-                        合計
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-
-                    {result.rows.map(
-                      (row) => {
-
-                        const patient =
-                          Number(
-                            row.patients ||
-                              0
-                          );
-
-                        const insurance =
-                          Number(
-                            row.insurance ||
-                              0
-                          );
-
-                        const care =
-                          Number(
-                            row.care ||
-                              0
-                          );
-
-                        const total =
-                          insurance +
-                          care;
-
-                        const hasData =
-                          patient > 0 ||
-                          insurance > 0 ||
-                          care > 0;
-
-                        if (!hasData) {
-                          return null;
-                        }
-
-                        return (
-                          <tr
-                            key={row.day}
+                  <div
+                    style={{
+                      display:
+                        "grid",
+                      gridTemplateColumns:
+                        "repeat(3, minmax(0, 1fr))",
+                      gap: "8px",
+                    }}
+                  >
+                    {row.cells.map(
+                      (cell) => (
+                        <div
+                          key={
+                            cell.key
+                          }
+                          style={{
+                            minWidth:
+                              0,
+                          }}
+                        >
+                          <div
+                            style={{
+                              textAlign:
+                                "center",
+                              fontSize:
+                                "12px",
+                              fontWeight:
+                                700,
+                              marginBottom:
+                                "6px",
+                            }}
                           >
+                            {cell.label}
+                          </div>
 
-                            <td
-                              style={
-                                cellStyle
+                          <div
+                            style={{
+                              height:
+                                "95px",
+                              border:
+                                "1px solid #cbd5e1",
+                              borderRadius:
+                                "10px",
+                              background:
+                                "#ffffff",
+                              display:
+                                "flex",
+                              alignItems:
+                                "center",
+                              justifyContent:
+                                "center",
+                              overflow:
+                                "hidden",
+                              padding:
+                                "4px",
+                            }}
+                          >
+                            <img
+                              src={
+                                cell.preview
                               }
-                            >
-                              {row.day}日
-                            </td>
-
-                            <td
-                              style={
-                                numberCellStyle
+                              alt={
+                                cell.label
                               }
-                            >
-                              {row.patients ||
-                                ""}
-                            </td>
-
-                            <td
-                              style={
-                                numberCellStyle
-                              }
-                            >
-                              {row.insurance ||
-                                ""}
-                            </td>
-
-                            <td
-                              style={
-                                numberCellStyle
-                              }
-                            >
-                              {row.care ||
-                                ""}
-                            </td>
-
-                            <td
                               style={{
-                                ...numberCellStyle,
-                                fontWeight:
-                                  "700",
+                                maxWidth:
+                                  "100%",
+                                maxHeight:
+                                  "85px",
+                                objectFit:
+                                  "contain",
+                              }}
+                            />
+                          </div>
+
+                          <div
+                            style={{
+                              marginTop:
+                                "8px",
+                              padding:
+                                "8px 4px",
+                              background:
+                                "#f8fafc",
+                              borderRadius:
+                                "8px",
+                              textAlign:
+                                "center",
+                              minHeight:
+                                "54px",
+                              fontSize:
+                                "12px",
+                            }}
+                          >
+                            OCR
+                            <br />
+
+                            <strong
+                              style={{
+                                fontSize:
+                                  "16px",
                               }}
                             >
-                              {total.toLocaleString()}
-                            </td>
+                              {cell.value ||
+                                "（空）"}
+                            </strong>
 
-                          </tr>
-                        );
-                      }
-                    )}
-
-                  </tbody>
-
-                </table>
-
-              </div>
-
-              <details
-                style={{
-                  marginTop: "24px",
-                }}
-              >
-
-                <summary
-                  style={{
-                    fontWeight: "700",
-                    cursor: "pointer",
-                  }}
-                >
-                  OCR生データを確認
-                </summary>
-
-                <div
-                  style={{
-                    marginTop: "16px",
-                  }}
-                >
-
-                  {result.rows.map(
-                    (row) => (
-
-                      <div
-                        key={row.day}
-                        style={{
-                          padding:
-                            "8px 0",
-                          borderBottom:
-                            "1px solid #e2e8f0",
-                        }}
-                      >
-
-                        <strong>
-                          {row.day}日
-                        </strong>
-
-                        <div>
-                          患者：
-                          {row.patients ||
-                            "（空）"}
-                          {" / "}
-
-                          保険：
-                          {row.insurance ||
-                            "（空）"}
-                          {" / "}
-
-                          介護：
-                          {row.care ||
-                            "（空）"}
+                            {cell.raw &&
+                              cell.raw !==
+                                cell.value && (
+                                <>
+                                  <br />
+                                  <span
+                                    style={{
+                                      color:
+                                        "#64748b",
+                                      fontSize:
+                                        "10px",
+                                    }}
+                                  >
+                                    raw:
+                                    {
+                                      cell.raw
+                                    }
+                                  </span>
+                                </>
+                              )}
+                          </div>
                         </div>
-
-                      </div>
-
-                    )
-                  )}
-
+                      )
+                    )}
+                  </div>
                 </div>
-
-              </details>
-
-            </section>
-
-          )
+              )
+            )}
+          </section>
         )}
 
         <footer>
-          OCR位置確認版
+          まず切り抜きとOCRを分離して確認します
         </footer>
-
       </section>
     </main>
   );
 }
-
-const cellStyle = {
-  border: "1px solid #cbd5e1",
-  padding: "10px",
-  whiteSpace: "nowrap",
-};
-
-const numberCellStyle = {
-  ...cellStyle,
-  textAlign: "right",
-};
