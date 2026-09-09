@@ -8,6 +8,7 @@ export default function App() {
   const [statusText, setStatusText] = useState("");
   const [results, setResults] = useState([]);
   const [elapsed, setElapsed] = useState(null);
+  const [engineTime, setEngineTime] = useState(null);
   const [error, setError] = useState("");
   const inputRef = useRef(null);
 
@@ -19,6 +20,8 @@ export default function App() {
       y: 0.035,
       w: 0.030,
       h: 0.755,
+      scale: 2.2,
+      whitelist: "0123456789",
     },
     {
       key: "insurance",
@@ -27,6 +30,8 @@ export default function App() {
       y: 0.035,
       w: 0.055,
       h: 0.755,
+      scale: 1.8,
+      whitelist: "0123456789,",
     },
     {
       key: "care",
@@ -35,20 +40,28 @@ export default function App() {
       y: 0.035,
       w: 0.060,
       h: 0.755,
+      scale: 1.8,
+      whitelist: "0123456789,",
     },
   ];
 
   function handleFiles(event) {
     const selected = Array.from(event.target.files || []);
+
     setFiles(selected);
     setResults([]);
     setElapsed(null);
+    setEngineTime(null);
     setProgress(0);
     setStatusText("");
     setError("");
   }
 
-  function cropImage(file, crop) {
+  function clamp(value) {
+    return Math.max(0, Math.min(255, value));
+  }
+
+  function cropAndEnhanceImage(file, crop) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
@@ -60,14 +73,31 @@ export default function App() {
           const sw = Math.floor(img.width * crop.w);
           const sh = Math.floor(img.height * crop.h);
 
-          const scale = 1.35;
+          const scale = crop.scale || 1.8;
+
           const canvas = document.createElement("canvas");
-          canvas.width = Math.floor(sw * scale);
-          canvas.height = Math.floor(sh * scale);
+
+          canvas.width = Math.max(
+            1,
+            Math.floor(sw * scale)
+          );
+
+          canvas.height = Math.max(
+            1,
+            Math.floor(sh * scale)
+          );
 
           const ctx = canvas.getContext("2d", {
             willReadFrequently: true,
           });
+
+          /*
+            モニター撮影画像なので、
+            無理に二値化せず拡大してから
+            グレースケール＋コントラスト強調します。
+          */
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
 
           ctx.drawImage(
             img,
@@ -90,17 +120,38 @@ export default function App() {
 
           const data = imageData.data;
 
+          /*
+            1.0 = 元のコントラスト
+            1.65 = 少し強め
+          */
+          const contrast = 1.65;
+
           for (let i = 0; i < data.length; i += 4) {
             const gray =
               data[i] * 0.299 +
               data[i + 1] * 0.587 +
               data[i + 2] * 0.114;
 
-            const value = gray < 165 ? 0 : 255;
+            /*
+              完全な白黒にはせず、
+              階調を残したまま数字を強調します。
+            */
+            let adjusted =
+              (gray - 128) * contrast + 128;
 
-            data[i] = value;
-            data[i + 1] = value;
-            data[i + 2] = value;
+            adjusted = clamp(adjusted);
+
+            /*
+              背景を少し明るく寄せる
+            */
+            adjusted =
+              adjusted > 175
+                ? clamp(adjusted + 18)
+                : adjusted;
+
+            data[i] = adjusted;
+            data[i + 1] = adjusted;
+            data[i + 2] = adjusted;
             data[i + 3] = 255;
           }
 
@@ -111,7 +162,9 @@ export default function App() {
               URL.revokeObjectURL(url);
 
               if (!blob) {
-                reject(new Error("画像変換に失敗しました"));
+                reject(
+                  new Error("画像変換に失敗しました")
+                );
                 return;
               }
 
@@ -128,80 +181,174 @@ export default function App() {
 
       img.onerror = () => {
         URL.revokeObjectURL(url);
-        reject(new Error("画像を読み込めませんでした"));
+
+        reject(
+          new Error("画像を読み込めませんでした")
+        );
       };
 
       img.src = url;
     });
   }
 
+  function cleanText(text) {
+    return String(text || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .join("\n");
+  }
+
   async function analyzeImages() {
-    if (files.length === 0 || isAnalyzing) return;
+    if (files.length === 0 || isAnalyzing) {
+      return;
+    }
 
     setIsAnalyzing(true);
     setProgress(0);
     setResults([]);
     setElapsed(null);
+    setEngineTime(null);
     setError("");
 
-    const started = performance.now();
+    const totalStarted = performance.now();
+
     let worker;
 
     try {
-      setStatusText("OCRエンジンを準備しています…");
+      setStatusText(
+        "OCRエンジンを準備しています…"
+      );
+
+      const engineStarted = performance.now();
 
       worker = await createWorker("eng", 1, {
         logger: (message) => {
-          if (message.status === "recognizing text") {
+          if (
+            message.status ===
+            "recognizing text"
+          ) {
             setProgress(
-              Math.round((message.progress || 0) * 100)
+              Math.round(
+                (message.progress || 0) * 100
+              )
             );
           }
         },
       });
 
+      const engineFinished = performance.now();
+
+      setEngineTime(
+        (
+          (engineFinished - engineStarted) /
+          1000
+        ).toFixed(1)
+      );
+
+      /*
+        Sparse Text モード。
+        空欄が多い縦長の帳票列に向いています。
+      */
       await worker.setParameters({
-        tessedit_char_whitelist: "0123456789,",
         preserve_interword_spaces: "1",
-        tessedit_pageseg_mode: "6",
+        tessedit_pageseg_mode: "11",
+        user_defined_dpi: "300",
       });
 
       const output = [];
 
-      for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+      for (
+        let fileIndex = 0;
+        fileIndex < files.length;
+        fileIndex++
+      ) {
         const file = files[fileIndex];
-        const columnResults = {};
 
-        for (let cropIndex = 0; cropIndex < crops.length; cropIndex++) {
+        const columnResults = {};
+        const timings = {};
+
+        for (
+          let cropIndex = 0;
+          cropIndex < crops.length;
+          cropIndex++
+        ) {
           const crop = crops[cropIndex];
 
           setStatusText(
-            `${fileIndex + 1}/${files.length}枚目：${crop.label}を解析中…`
+            `${fileIndex + 1}/${
+              files.length
+            }枚目：${crop.label}を解析中…`
           );
 
-          const blob = await cropImage(file, crop);
           setProgress(0);
 
-          const result = await worker.recognize(blob);
+          const columnStarted =
+            performance.now();
 
-          columnResults[crop.key] = result.data.text || "";
+          const blob =
+            await cropAndEnhanceImage(
+              file,
+              crop
+            );
+
+          /*
+            列ごとに許可文字を変更。
+          */
+          await worker.setParameters({
+            tessedit_char_whitelist:
+              crop.whitelist,
+            preserve_interword_spaces: "1",
+            tessedit_pageseg_mode: "11",
+            user_defined_dpi: "300",
+          });
+
+          const recognition =
+            await worker.recognize(blob);
+
+          const columnFinished =
+            performance.now();
+
+          columnResults[crop.key] =
+            cleanText(
+              recognition.data.text
+            );
+
+          timings[crop.key] = (
+            (columnFinished -
+              columnStarted) /
+            1000
+          ).toFixed(1);
         }
 
         output.push({
           fileName: file.name,
           ...columnResults,
+          timings,
         });
       }
 
-      const finished = performance.now();
+      const totalFinished =
+        performance.now();
 
-      setElapsed(((finished - started) / 1000).toFixed(1));
+      setElapsed(
+        (
+          (totalFinished -
+            totalStarted) /
+          1000
+        ).toFixed(1)
+      );
+
       setResults(output);
       setProgress(100);
       setStatusText("解析完了");
     } catch (e) {
       console.error(e);
-      setError("OCR解析中にエラーが発生しました。");
+
+      setError(
+        "OCR解析中にエラーが発生しました。"
+      );
+
       setStatusText("");
     } finally {
       if (worker) {
@@ -220,17 +367,25 @@ export default function App() {
 
           <div>
             <h1>訪問診療OCR</h1>
-            <p>診療日別集計表 → Excel</p>
+            <p>
+              診療日別集計表 → Excel
+            </p>
           </div>
         </header>
 
         <div className="privacy">
-          🔒 画像・診療データはサーバーに保存されません
+          🔒
+          画像・診療データはサーバーに保存されません
         </div>
 
         <section className="card">
-          <span className="step">STEP 1</span>
-          <h2>スクリーンショットを選択</h2>
+          <span className="step">
+            STEP 1
+          </span>
+
+          <h2>
+            スクリーンショットを選択
+          </h2>
 
           <input
             ref={inputRef}
@@ -244,21 +399,34 @@ export default function App() {
           <button
             className="select-button"
             disabled={isAnalyzing}
-            onClick={() => inputRef.current?.click()}
+            onClick={() =>
+              inputRef.current?.click()
+            }
           >
             ＋ スクリーンショットを選択
           </button>
 
           {files.length > 0 && (
             <div className="selected">
-              <strong>{files.length}枚</strong>選択しました
+              <strong>
+                {files.length}枚
+              </strong>
+              選択しました
             </div>
           )}
         </section>
 
         <section className="card">
-          <span className="step">STEP 2</span>
+          <span className="step">
+            STEP 2
+          </span>
+
           <h2>3列OCR</h2>
+
+          <p className="description">
+            グレースケール＋
+            コントラスト補正で解析します。
+          </p>
 
           <button
             className={
@@ -266,7 +434,10 @@ export default function App() {
                 ? "select-button"
                 : "disabled-button"
             }
-            disabled={files.length === 0 || isAnalyzing}
+            disabled={
+              files.length === 0 ||
+              isAnalyzing
+            }
             onClick={analyzeImages}
           >
             {isAnalyzing
@@ -281,7 +452,9 @@ export default function App() {
               <div className="progress-track">
                 <div
                   className="progress-bar"
-                  style={{ width: `${progress}%` }}
+                  style={{
+                    width: `${progress}%`,
+                  }}
                 />
               </div>
             </div>
@@ -289,7 +462,25 @@ export default function App() {
 
           {elapsed && (
             <div className="selected">
-              解析時間：<strong>{elapsed}秒</strong>
+              <div>
+                総解析時間：
+                <strong>
+                  {elapsed}秒
+                </strong>
+              </div>
+
+              {engineTime && (
+                <div
+                  style={{
+                    marginTop: "6px",
+                  }}
+                >
+                  OCR準備：
+                  <strong>
+                    {engineTime}秒
+                  </strong>
+                </div>
+              )}
             </div>
           )}
 
@@ -300,61 +491,114 @@ export default function App() {
           )}
         </section>
 
-        {results.map((result, index) => (
-          <section
-            className="card"
-            key={`${result.fileName}-${index}`}
-          >
-            <span className="step">STEP 3</span>
-            <h2>OCR結果</h2>
+        {results.map(
+          (result, index) => (
+            <section
+              className="card"
+              key={`${result.fileName}-${index}`}
+            >
+              <span className="step">
+                STEP 3
+              </span>
 
-            <p className="description">
-              今回は3列だけ読み取っています。
-            </p>
+              <h2>OCR結果</h2>
 
-            <strong>{result.fileName}</strong>
+              <p className="description">
+                3列を個別に読み取った結果です。
+              </p>
 
-            <div style={{ overflowX: "auto", marginTop: "16px" }}>
-              <table
+              <strong>
+                {result.fileName}
+              </strong>
+
+              <div
                 style={{
-                  width: "100%",
-                  borderCollapse: "collapse",
-                  fontSize: "13px",
+                  marginTop: "14px",
+                  padding: "12px",
+                  borderRadius: "10px",
+                  background: "#f8fafc",
+                  fontSize: "12px",
+                  lineHeight: "1.7",
                 }}
               >
-                <thead>
-                  <tr>
-                    <th style={cellStyle}>実患者</th>
-                    <th style={cellStyle}>保険診療分</th>
-                    <th style={cellStyle}>介護保険</th>
-                  </tr>
-                </thead>
+                <div>
+                  実患者：
+                  {result.timings.patients}秒
+                </div>
 
-                <tbody>
-                  <tr>
-                    <td style={cellStyle}>
-                      <pre style={preStyle}>
-                        {result.patients}
-                      </pre>
-                    </td>
+                <div>
+                  保険診療分：
+                  {result.timings.insurance}秒
+                </div>
 
-                    <td style={cellStyle}>
-                      <pre style={preStyle}>
-                        {result.insurance}
-                      </pre>
-                    </td>
+                <div>
+                  介護保険：
+                  {result.timings.care}秒
+                </div>
+              </div>
 
-                    <td style={cellStyle}>
-                      <pre style={preStyle}>
-                        {result.care}
-                      </pre>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
-        ))}
+              <div
+                style={{
+                  overflowX: "auto",
+                  marginTop: "16px",
+                }}
+              >
+                <table
+                  style={{
+                    width: "100%",
+                    borderCollapse:
+                      "collapse",
+                    fontSize: "13px",
+                  }}
+                >
+                  <thead>
+                    <tr>
+                      <th style={cellStyle}>
+                        実患者
+                      </th>
+
+                      <th style={cellStyle}>
+                        保険診療分
+                      </th>
+
+                      <th style={cellStyle}>
+                        介護保険
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    <tr>
+                      <td style={cellStyle}>
+                        <pre
+                          style={preStyle}
+                        >
+                          {result.patients}
+                        </pre>
+                      </td>
+
+                      <td style={cellStyle}>
+                        <pre
+                          style={preStyle}
+                        >
+                          {result.insurance}
+                        </pre>
+                      </td>
+
+                      <td style={cellStyle}>
+                        <pre
+                          style={preStyle}
+                        >
+                          {result.care}
+                        </pre>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )
+        )}
 
         <footer>
           次はOCR結果を日付ごとの表に変換します
