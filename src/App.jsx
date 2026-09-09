@@ -12,12 +12,6 @@ export default function App() {
 
   const inputRef = useRef(null);
 
-  /*
-   * ----------------------------------------------------
-   * 現在ほぼ合っている位置情報
-   * ----------------------------------------------------
-   */
-
   const ROW_1_CENTER = 0.0550;
   const ROW_STEP = 0.0267;
 
@@ -27,13 +21,11 @@ export default function App() {
       x: 0.4820,
       w: 0.0300,
     },
-
     insurance: {
       label: "保険診療分",
       x: 0.5280,
       w: 0.0700,
     },
-
     care: {
       label: "介護保険",
       x: 0.7970,
@@ -68,10 +60,7 @@ export default function App() {
 
       image.onerror = () => {
         URL.revokeObjectURL(url);
-
-        reject(
-          new Error("画像を読み込めませんでした")
-        );
+        reject(new Error("画像を読み込めませんでした"));
       };
 
       image.src = url;
@@ -83,24 +72,14 @@ export default function App() {
   }
 
   /*
-   * ----------------------------------------------------
-   * 元セルを切り抜く
-   * ----------------------------------------------------
+   * 元画像から1セルを切り出す
    */
-
-  function makeRawCellCanvas(
-    image,
-    day,
-    columnKey
-  ) {
+  function makeRawCell(image, day, columnKey) {
     const column = COLUMNS[columnKey];
 
     const centerY =
       image.height *
-      (
-        ROW_1_CENTER +
-        (day - 1) * ROW_STEP
-      );
+      (ROW_1_CENTER + (day - 1) * ROW_STEP);
 
     const sourceHeight =
       image.height *
@@ -108,54 +87,44 @@ export default function App() {
       0.60;
 
     let sourceX =
-      image.width *
-      column.x;
+      image.width * column.x;
 
     let sourceWidth =
-      image.width *
-      column.w;
+      image.width * column.w;
 
     const sourceY =
-      centerY -
-      sourceHeight / 2;
+      centerY - sourceHeight / 2;
 
     /*
-     * 罫線がなるべく入らないよう
-     * 列の左右を少しだけ削る。
+     * 左右の罫線がなるべく入らないよう少し削る
      */
-    const trim =
+    const sideTrim =
       columnKey === "patients"
-        ? 0.04
-        : 0.035;
+        ? 0.025
+        : 0.02;
 
-    sourceX +=
-      sourceWidth * trim;
-
-    sourceWidth *=
-      1 - trim * 2;
+    sourceX += sourceWidth * sideTrim;
+    sourceWidth *= 1 - sideTrim * 2;
 
     const canvas =
       document.createElement("canvas");
 
-    canvas.width =
-      Math.max(
-        30,
-        Math.round(sourceWidth)
-      );
+    canvas.width = Math.max(
+      30,
+      Math.round(sourceWidth)
+    );
 
-    canvas.height =
-      Math.max(
-        20,
-        Math.round(sourceHeight)
-      );
+    canvas.height = Math.max(
+      18,
+      Math.round(sourceHeight)
+    );
 
     const ctx =
       canvas.getContext("2d", {
         willReadFrequently: true,
       });
 
-    ctx.fillStyle = "#ffffff";
-
+    ctx.fillStyle = "#fff";
     ctx.fillRect(
       0,
       0,
@@ -182,122 +151,344 @@ export default function App() {
   }
 
   /*
-   * ----------------------------------------------------
-   * モアレ軽減
-   *
-   * 一度縮小して画面の細かい画素パターンを
-   * 平均化してからOCRサイズへ拡大する。
-   * ----------------------------------------------------
+   * モアレを減らすため、
+   * いったん縮小してから再拡大
    */
-
-  function suppressMoire(rawCanvas) {
-    /*
-     * いったん約45%へ縮小
-     */
+  function reduceMoire(source) {
     const small =
       document.createElement("canvas");
 
-    small.width =
-      Math.max(
-        20,
-        Math.round(
-          rawCanvas.width * 0.45
-        )
-      );
+    small.width = Math.max(
+      20,
+      Math.round(source.width * 0.38)
+    );
 
-    small.height =
-      Math.max(
-        16,
-        Math.round(
-          rawCanvas.height * 0.45
-        )
-      );
+    small.height = Math.max(
+      14,
+      Math.round(source.height * 0.38)
+    );
 
-    const smallCtx =
+    const sctx =
       small.getContext("2d", {
         willReadFrequently: true,
       });
 
-    smallCtx.fillStyle = "#ffffff";
-
-    smallCtx.fillRect(
+    sctx.fillStyle = "#fff";
+    sctx.fillRect(
       0,
       0,
       small.width,
       small.height
     );
 
-    smallCtx.imageSmoothingEnabled = true;
-    smallCtx.imageSmoothingQuality = "high";
+    sctx.imageSmoothingEnabled = true;
+    sctx.imageSmoothingQuality = "high";
 
-    smallCtx.drawImage(
-      rawCanvas,
+    sctx.drawImage(
+      source,
       0,
       0,
       small.width,
       small.height
     );
 
-    /*
-     * OCR向けに大きく戻す
-     */
-    const output =
-      document.createElement("canvas");
-
-    output.width =
-      Math.max(
-        300,
-        small.width * 7
-      );
-
-    output.height =
-      Math.max(
-        120,
-        small.height * 7
-      );
-
-    const ctx =
-      output.getContext("2d", {
-        willReadFrequently: true,
-      });
-
-    ctx.fillStyle = "#ffffff";
-
-    ctx.fillRect(
-      0,
-      0,
-      output.width,
-      output.height
-    );
-
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-
-    ctx.drawImage(
-      small,
-      0,
-      0,
-      output.width,
-      output.height
-    );
-
-    return output;
+    return small;
   }
 
   /*
-   * ----------------------------------------------------
-   * グレースケール版
-   * ----------------------------------------------------
+   * グレースケール化
    */
-
-  function makeGrayVariant(rawCanvas) {
+  function grayscale(source) {
     const canvas =
-      suppressMoire(rawCanvas);
+      document.createElement("canvas");
+
+    canvas.width = source.width;
+    canvas.height = source.height;
 
     const ctx =
       canvas.getContext("2d", {
         willReadFrequently: true,
       });
+
+    ctx.drawImage(source, 0, 0);
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+    const data = imageData.data;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const gray =
+        data[i] * 0.299 +
+        data[i + 1] * 0.587 +
+        data[i + 2] * 0.114;
+
+      let value =
+        (gray - 128) * 1.18 + 128;
+
+      value = clamp(value);
+
+      data[i] = value;
+      data[i + 1] = value;
+      data[i + 2] = value;
+      data[i + 3] = 255;
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+
+    return canvas;
+  }
+
+  /*
+   * セル内に残った縦罫線を除去
+   */
+  function removeVerticalRules(source) {
+    const canvas =
+      document.createElement("canvas");
+
+    canvas.width = source.width;
+    canvas.height = source.height;
+
+    const ctx =
+      canvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    ctx.drawImage(source, 0, 0);
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+    const data = imageData.data;
+
+    for (let x = 0; x < canvas.width; x++) {
+      let dark = 0;
+
+      for (let y = 0; y < canvas.height; y++) {
+        const i =
+          (y * canvas.width + x) * 4;
+
+        if (data[i] < 105) {
+          dark++;
+        }
+      }
+
+      /*
+       * 高さの75%以上が暗ければ縦罫線
+       */
+      if (
+        dark / canvas.height >
+        0.75
+      ) {
+        for (let dx = -1; dx <= 1; dx++) {
+          const px = x + dx;
+
+          if (
+            px < 0 ||
+            px >= canvas.width
+          ) {
+            continue;
+          }
+
+          for (
+            let y = 0;
+            y < canvas.height;
+            y++
+          ) {
+            const i =
+              (y * canvas.width + px) * 4;
+
+            data[i] = 255;
+            data[i + 1] = 255;
+            data[i + 2] = 255;
+            data[i + 3] = 255;
+          }
+        }
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
+
+    return canvas;
+  }
+
+  /*
+   * 数字が存在している範囲だけ自動トリミング
+   */
+  function autoCropInk(source) {
+    const ctx =
+      source.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        source.width,
+        source.height
+      );
+
+    const data = imageData.data;
+
+    let minX = source.width;
+    let minY = source.height;
+    let maxX = -1;
+    let maxY = -1;
+
+    /*
+     * かなり濃い画素だけを
+     * 「文字候補」とする
+     */
+    for (
+      let y = 0;
+      y < source.height;
+      y++
+    ) {
+      for (
+        let x = 0;
+        x < source.width;
+        x++
+      ) {
+        const i =
+          (y * source.width + x) * 4;
+
+        const value = data[i];
+
+        if (value < 135) {
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        }
+      }
+    }
+
+    /*
+     * 文字がなければ元画像を返す
+     */
+    if (
+      maxX < minX ||
+      maxY < minY
+    ) {
+      return source;
+    }
+
+    /*
+     * 少し余白を追加
+     */
+    const padX = 2;
+    const padY = 2;
+
+    minX = Math.max(0, minX - padX);
+    minY = Math.max(0, minY - padY);
+
+    maxX = Math.min(
+      source.width - 1,
+      maxX + padX
+    );
+
+    maxY = Math.min(
+      source.height - 1,
+      maxY + padY
+    );
+
+    const cropWidth =
+      maxX - minX + 1;
+
+    const cropHeight =
+      maxY - minY + 1;
+
+    /*
+     * OCRには十分な白余白を付ける
+     */
+    const scale = 8;
+
+    const target =
+      document.createElement("canvas");
+
+    target.width = Math.max(
+      300,
+      cropWidth * scale + 100
+    );
+
+    target.height = Math.max(
+      140,
+      cropHeight * scale + 70
+    );
+
+    const tctx =
+      target.getContext("2d");
+
+    tctx.fillStyle = "#fff";
+
+    tctx.fillRect(
+      0,
+      0,
+      target.width,
+      target.height
+    );
+
+    const destinationWidth =
+      cropWidth * scale;
+
+    const destinationHeight =
+      cropHeight * scale;
+
+    const dx =
+      (target.width -
+        destinationWidth) /
+      2;
+
+    const dy =
+      (target.height -
+        destinationHeight) /
+      2;
+
+    tctx.imageSmoothingEnabled = true;
+    tctx.imageSmoothingQuality = "high";
+
+    tctx.drawImage(
+      source,
+      minX,
+      minY,
+      cropWidth,
+      cropHeight,
+      dx,
+      dy,
+      destinationWidth,
+      destinationHeight
+    );
+
+    return target;
+  }
+
+  /*
+   * 2値化バージョン
+   */
+  function thresholdCanvas(source, threshold) {
+    const canvas =
+      document.createElement("canvas");
+
+    canvas.width = source.width;
+    canvas.height = source.height;
+
+    const ctx =
+      canvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    ctx.drawImage(source, 0, 0);
 
     const imageData =
       ctx.getImageData(
@@ -314,90 +505,18 @@ export default function App() {
       i < data.length;
       i += 4
     ) {
-      const gray =
-        data[i] * 0.299 +
-        data[i + 1] * 0.587 +
-        data[i + 2] * 0.114;
-
-      /*
-       * 前回よりコントラストを弱める。
-       * モアレを強調しないため。
-       */
-      let value =
-        (gray - 128) * 1.12 + 128;
-
-      value = clamp(value);
-
-      data[i] = value;
-      data[i + 1] = value;
-      data[i + 2] = value;
-      data[i + 3] = 255;
-    }
-
-    ctx.putImageData(
-      imageData,
-      0,
-      0
-    );
-
-    return canvas;
-  }
-
-  /*
-   * ----------------------------------------------------
-   * 軽い2値化版
-   * ----------------------------------------------------
-   */
-
-  function makeThresholdVariant(
-    rawCanvas,
-    threshold
-  ) {
-    const canvas =
-      suppressMoire(rawCanvas);
-
-    const ctx =
-      canvas.getContext("2d", {
-        willReadFrequently: true,
-      });
-
-    const imageData =
-      ctx.getImageData(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
-
-    const data =
-      imageData.data;
-
-    for (
-      let i = 0;
-      i < data.length;
-      i += 4
-    ) {
-      const gray =
-        data[i] * 0.299 +
-        data[i + 1] * 0.587 +
-        data[i + 2] * 0.114;
-
-      const value =
-        gray < threshold
+      const v =
+        data[i] < threshold
           ? 0
           : 255;
 
-      data[i] = value;
-      data[i + 1] = value;
-      data[i + 2] = value;
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
       data[i + 3] = 255;
     }
 
-    ctx.putImageData(
-      imageData,
-      0,
-      0
-    );
+    ctx.putImageData(imageData, 0, 0);
 
     return canvas;
   }
@@ -413,7 +532,6 @@ export default function App() {
                   "画像変換に失敗しました"
                 )
               );
-
               return;
             }
 
@@ -426,113 +544,101 @@ export default function App() {
     );
   }
 
-  function cleanText(text) {
-    return String(text || "")
-      .replace(/\s/g, "")
-      .replace(/[^\d,]/g, "");
+  function cleanOCR(text) {
+    const value =
+      String(text || "")
+        .replace(/\s/g, "")
+        .replace(/[^\d,]/g, "");
+
+    if (!/\d/.test(value)) {
+      return "";
+    }
+
+    return value;
   }
 
   /*
-   * ----------------------------------------------------
-   * 候補の妥当性評価
-   * ----------------------------------------------------
-   *
-   * Tesseractのconfidenceだけでは
-   * 「1」などの誤認識が高得点になることがある。
-   *
-   * そこで帳票として自然な数字かも評価する。
+   * 帳票として自然な候補を評価
    */
-
-  function candidateScore(
+  function scoreCandidate(
     columnKey,
-    value,
-    confidence
+    value
   ) {
-    if (!value) {
-      return -100;
-    }
+    if (!value) return -1000;
 
     const digits =
       value.replace(/,/g, "");
 
     if (!/^\d+$/.test(digits)) {
-      return -100;
+      return -1000;
     }
 
-    const number =
-      Number(digits);
+    const n = Number(digits);
 
-    if (!Number.isFinite(number)) {
-      return -100;
-    }
-
-    let score =
-      Number(confidence || 0);
+    let score = 0;
 
     if (columnKey === "patients") {
-      /*
-       * 実患者は通常1〜2桁。
-       */
-      if (
-        number >= 1 &&
-        number <= 99
-      ) {
-        score += 40;
-      } else {
-        score -= 60;
+      if (n >= 1 && n <= 99) {
+        score += 100;
       }
 
-      if (
-        digits.length === 2
-      ) {
+      if (digits.length === 2) {
+        score += 50;
+      }
+
+      if (digits.length === 1) {
         score += 10;
+      }
+
+      if (n > 99) {
+        score -= 200;
       }
     } else {
       /*
-       * 保険・介護点数。
-       *
-       * 今回の勤務日の数字は
-       * 基本的に4〜5桁。
+       * 点数は今回の帳票では
+       * 4～5桁が最も自然
        */
       if (
-        number >= 1000 &&
-        number <= 50000
-      ) {
-        score += 35;
-      }
-
-      if (
-        digits.length === 4 ||
         digits.length === 5
       ) {
-        score += 20;
+        score += 120;
       }
 
-      /*
-       * 「1」「5」などを誤採用しにくくする。
-       */
       if (
-        number > 0 &&
-        number < 100
+        digits.length === 4
       ) {
-        score -= 40;
+        score += 100;
+      }
+
+      if (
+        digits.length === 3
+      ) {
+        score += 15;
+      }
+
+      if (
+        digits.length <= 2
+      ) {
+        score -= 100;
+      }
+
+      if (
+        n >= 1000 &&
+        n <= 50000
+      ) {
+        score += 70;
       }
     }
 
     return score;
   }
 
-  /*
-   * ----------------------------------------------------
-   * 1つの画像をOCR
-   * ----------------------------------------------------
-   */
-
-  async function recognizeVariant(
+  async function runOCR(
     worker,
     canvas,
+    psm,
     columnKey,
-    variantName
+    variant
   ) {
     const blob =
       await canvasToBlob(canvas);
@@ -543,15 +649,14 @@ export default function App() {
           ? "0123456789"
           : "0123456789,",
 
-      /*
-       * 数字1個または数値1個。
-       */
-      tessedit_pageseg_mode: "7",
+      tessedit_pageseg_mode:
+        String(psm),
 
       preserve_interword_spaces:
         "0",
 
-      user_defined_dpi: "300",
+      user_defined_dpi:
+        "300",
     });
 
     const result =
@@ -563,81 +668,97 @@ export default function App() {
       ).trim();
 
     const value =
-      cleanText(raw);
-
-    const confidence =
-      Number(
-        result.data.confidence || 0
-      );
+      cleanOCR(raw);
 
     return {
-      variantName,
+      psm,
+      variant,
       raw,
       value,
-      confidence,
       score:
-        candidateScore(
+        scoreCandidate(
           columnKey,
-          value,
-          confidence
+          value
         ),
     };
   }
 
-  /*
-   * ----------------------------------------------------
-   * 3種類の画像処理を試して
-   * 最良結果を採用
-   * ----------------------------------------------------
-   */
-
   async function recognizeCell(
     worker,
-    rawCanvas,
+    image,
+    day,
     columnKey
   ) {
+    const raw =
+      makeRawCell(
+        image,
+        day,
+        columnKey
+      );
+
+    const reduced =
+      reduceMoire(raw);
+
+    const gray =
+      grayscale(reduced);
+
+    const noLines =
+      removeVerticalRules(gray);
+
+    const cropped =
+      autoCropInk(noLines);
+
+    const binary145 =
+      thresholdCanvas(
+        cropped,
+        145
+      );
+
+    const binary165 =
+      thresholdCanvas(
+        cropped,
+        165
+      );
+
     const variants = [
       {
         name: "gray",
-        canvas:
-          makeGrayVariant(
-            rawCanvas
-          ),
+        canvas: cropped,
       },
       {
-        name: "threshold160",
-        canvas:
-          makeThresholdVariant(
-            rawCanvas,
-            160
-          ),
+        name: "bin145",
+        canvas: binary145,
       },
       {
-        name: "threshold180",
-        canvas:
-          makeThresholdVariant(
-            rawCanvas,
-            180
-          ),
+        name: "bin165",
+        canvas: binary165,
       },
     ];
 
     const candidates = [];
 
+    /*
+     * 1行、1単語、raw-line を試す
+     */
+    const psms = [7, 8, 13];
+
     for (
       const variant of variants
     ) {
-      const candidate =
-        await recognizeVariant(
-          worker,
-          variant.canvas,
-          columnKey,
-          variant.name
-        );
+      for (
+        const psm of psms
+      ) {
+        const result =
+          await runOCR(
+            worker,
+            variant.canvas,
+            psm,
+            columnKey,
+            variant.name
+          );
 
-      candidates.push(
-        candidate
-      );
+        candidates.push(result);
+      }
     }
 
     candidates.sort(
@@ -648,22 +769,19 @@ export default function App() {
     const best =
       candidates[0];
 
-    /*
-     * 画面には採用した画像を表示。
-     */
-    const bestCanvas =
+    const previewCanvas =
       variants.find(
-        (item) =>
-          item.name ===
-          best.variantName
+        (v) =>
+          v.name ===
+          best.variant
       )?.canvas;
 
     return {
       ...best,
 
       preview:
-        bestCanvas
-          ? bestCanvas.toDataURL(
+        previewCanvas
+          ? previewCanvas.toDataURL(
               "image/png"
             )
           : "",
@@ -673,10 +791,7 @@ export default function App() {
   }
 
   async function analyzeImage() {
-    if (
-      !file ||
-      isAnalyzing
-    ) {
+    if (!file || isAnalyzing) {
       return;
     }
 
@@ -693,7 +808,7 @@ export default function App() {
 
     try {
       setStatusText(
-        "画像を準備しています…"
+        "画像を読み込んでいます…"
       );
 
       const image =
@@ -731,36 +846,22 @@ export default function App() {
             "care",
           ]
         ) {
-          const column =
-            COLUMNS[columnKey];
-
           setStatusText(
-            `${day}日：${column.label}を解析中…`
+            `${day}日：${COLUMNS[columnKey].label}を解析中…`
           );
 
-          const rawCanvas =
-            makeRawCellCanvas(
+          const result =
+            await recognizeCell(
+              worker,
               image,
               day,
               columnKey
             );
 
-          const result =
-            await recognizeCell(
-              worker,
-              rawCanvas,
-              columnKey
-            );
-
           row.cells.push({
-            key:
-              columnKey,
-
+            key: columnKey,
             label:
-              column.label,
-
-            preview:
-              result.preview,
+              COLUMNS[columnKey].label,
 
             value:
               result.value,
@@ -768,11 +869,14 @@ export default function App() {
             raw:
               result.raw,
 
-            confidence:
-              result.confidence,
-
             variant:
-              result.variantName,
+              result.variant,
+
+            psm:
+              result.psm,
+
+            preview:
+              result.preview,
 
             candidates:
               result.candidates,
@@ -782,10 +886,7 @@ export default function App() {
 
           setProgress(
             Math.round(
-              (
-                completed /
-                total
-              ) *
+              (completed / total) *
                 100
             )
           );
@@ -801,8 +902,7 @@ export default function App() {
 
       setElapsed(
         (
-          (finished -
-            started) /
+          (finished - started) /
           1000
         ).toFixed(1)
       );
@@ -832,7 +932,6 @@ export default function App() {
   return (
     <main className="page">
       <section className="app">
-
         <header>
           <div className="logo">
             歯
@@ -855,7 +954,6 @@ export default function App() {
         </div>
 
         <section className="card">
-
           <span className="step">
             STEP 1
           </span>
@@ -865,8 +963,8 @@ export default function App() {
           </h2>
 
           <p className="description">
-            7・14・21・28日の
-            OCR性能を確認します。
+            今回も7・14・21・28日の
+            4日でOCR精度を検証します。
           </p>
 
           <input
@@ -874,16 +972,12 @@ export default function App() {
             className="hidden-input"
             type="file"
             accept="image/*"
-            onChange={
-              handleFile
-            }
+            onChange={handleFile}
           />
 
           <button
             className="select-button"
-            disabled={
-              isAnalyzing
-            }
+            disabled={isAnalyzing}
             onClick={() =>
               inputRef.current?.click()
             }
@@ -896,22 +990,20 @@ export default function App() {
               {file.name}
             </div>
           )}
-
         </section>
 
         <section className="card">
-
           <span className="step">
             STEP 2
           </span>
 
           <h2>
-            モアレ低減OCR
+            改良OCR
           </h2>
 
           <p className="description">
-            3種類の画像処理を自動で試し、
-            最も信頼できる結果を採用します。
+            モアレ低減・罫線除去・
+            数字領域の自動トリミングを行います。
           </p>
 
           <button
@@ -921,12 +1013,9 @@ export default function App() {
                 : "disabled-button"
             }
             disabled={
-              !file ||
-              isAnalyzing
+              !file || isAnalyzing
             }
-            onClick={
-              analyzeImage
-            }
+            onClick={analyzeImage}
           >
             {isAnalyzing
               ? "解析中…"
@@ -965,12 +1054,10 @@ export default function App() {
               {error}
             </div>
           )}
-
         </section>
 
         {results.length > 0 && (
           <section className="card">
-
             <span className="step">
               STEP 3
             </span>
@@ -979,195 +1066,144 @@ export default function App() {
               OCR結果
             </h2>
 
-            <p className="description">
-              今回は採用された画像処理と
-              OCR結果も表示します。
-            </p>
-
-            {results.map(
-              (row) => (
-                <div
-                  key={row.day}
+            {results.map((row) => (
+              <div
+                key={row.day}
+                style={{
+                  marginBottom: "34px",
+                }}
+              >
+                <h3
                   style={{
+                    fontSize: "22px",
                     marginBottom:
-                      "34px",
+                      "14px",
                   }}
                 >
+                  {row.day}日
+                </h3>
 
-                  <h3
-                    style={{
-                      fontSize:
-                        "22px",
-                      marginBottom:
-                        "14px",
-                    }}
-                  >
-                    {row.day}日
-                  </h3>
-
-                  <div
-                    style={{
-                      display:
-                        "grid",
-
-                      gridTemplateColumns:
-                        "repeat(3, minmax(0, 1fr))",
-
-                      gap: "8px",
-                    }}
-                  >
-
-                    {row.cells.map(
-                      (cell) => (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns:
+                      "repeat(3, minmax(0, 1fr))",
+                    gap: "8px",
+                  }}
+                >
+                  {row.cells.map(
+                    (cell) => (
+                      <div
+                        key={cell.key}
+                        style={{
+                          minWidth: 0,
+                        }}
+                      >
                         <div
-                          key={
-                            cell.key
-                          }
                           style={{
-                            minWidth:
-                              0,
+                            textAlign:
+                              "center",
+                            fontSize:
+                              "11px",
+                            fontWeight:
+                              700,
+                            marginBottom:
+                              "5px",
                           }}
                         >
+                          {cell.label}
+                        </div>
 
-                          <div
+                        <div
+                          style={{
+                            height:
+                              "100px",
+                            border:
+                              "1px solid #cbd5e1",
+                            borderRadius:
+                              "10px",
+                            display:
+                              "flex",
+                            alignItems:
+                              "center",
+                            justifyContent:
+                              "center",
+                            overflow:
+                              "hidden",
+                            background:
+                              "#fff",
+                          }}
+                        >
+                          <img
+                            src={
+                              cell.preview
+                            }
+                            alt=""
+                            style={{
+                              width:
+                                "100%",
+                              maxHeight:
+                                "90px",
+                              objectFit:
+                                "contain",
+                            }}
+                          />
+                        </div>
+
+                        <div
+                          style={{
+                            marginTop:
+                              "7px",
+                            padding:
+                              "8px 3px",
+                            textAlign:
+                              "center",
+                            background:
+                              "#f8fafc",
+                            borderRadius:
+                              "8px",
+                            minHeight:
+                              "70px",
+                          }}
+                        >
+                          <strong
                             style={{
                               fontSize:
-                                "11px",
-
-                              fontWeight:
-                                700,
-
-                              textAlign:
-                                "center",
-
-                              marginBottom:
-                                "5px",
+                                "18px",
                             }}
                           >
-                            {cell.label}
-                          </div>
+                            {cell.value ||
+                              "（空）"}
+                          </strong>
 
-                          <div
+                          <br />
+
+                          <span
                             style={{
-                              height:
-                                "90px",
-
-                              border:
-                                "1px solid #cbd5e1",
-
-                              borderRadius:
-                                "10px",
-
-                              background:
-                                "white",
-
-                              display:
-                                "flex",
-
-                              alignItems:
-                                "center",
-
-                              justifyContent:
-                                "center",
-
-                              overflow:
-                                "hidden",
-
-                              padding:
-                                "4px",
+                              fontSize:
+                                "9px",
+                              color:
+                                "#64748b",
                             }}
                           >
-                            <img
-                              src={
-                                cell.preview
-                              }
-                              alt=""
-                              style={{
-                                width:
-                                  "100%",
-
-                                maxHeight:
-                                  "80px",
-
-                                objectFit:
-                                  "contain",
-                              }}
-                            />
-                          </div>
-
-                          <div
-                            style={{
-                              marginTop:
-                                "7px",
-
-                              background:
-                                "#f8fafc",
-
-                              borderRadius:
-                                "8px",
-
-                              padding:
-                                "7px 4px",
-
-                              textAlign:
-                                "center",
-
-                              minHeight:
-                                "72px",
-                            }}
-                          >
-                            <strong
-                              style={{
-                                fontSize:
-                                  "18px",
-                              }}
-                            >
-                              {cell.value ||
-                                "（空）"}
-                            </strong>
-
-                            <br />
-
-                            <span
-                              style={{
-                                fontSize:
-                                  "9px",
-
-                                color:
-                                  "#64748b",
-                              }}
-                            >
-                              {
-                                cell.variant
-                              }
-
-                              {" / "}
-
-                              conf
-                              {" "}
-                              {Math.round(
-                                cell.confidence
-                              )}
-                            </span>
-                          </div>
-
+                            {cell.variant}
+                            {" / "}
+                            PSM
+                            {cell.psm}
+                          </span>
                         </div>
-                      )
-                    )}
-
-                  </div>
-
+                      </div>
+                    )
+                  )}
                 </div>
-              )
-            )}
-
+              </div>
+            ))}
           </section>
         )}
 
         <footer>
-          モアレ低減＋複数候補OCRテスト
+          数字領域自動トリミングOCR
         </footer>
-
       </section>
     </main>
   );
