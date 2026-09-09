@@ -1,261 +1,215 @@
 import { useRef, useState } from "react";
-import { createWorker } from "tesseract.js";
 
 export default function App() {
   const [files, setFiles] = useState([]);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [statusText, setStatusText] = useState("");
-  const [results, setResults] = useState([]);
-  const [elapsed, setElapsed] = useState(null);
-  const [engineTime, setEngineTime] = useState(null);
+  const [previews, setPreviews] = useState([]);
+  const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState("");
+
+  /*
+    画像全体に対する割合。
+
+    row1Center:
+      1日目の行の中心位置
+
+    rowStep:
+      1日進むごとの縦方向の間隔
+  */
+  const [row1Center, setRow1Center] = useState(0.055);
+  const [rowStep, setRowStep] = useState(0.0267);
+
   const inputRef = useRef(null);
 
-  const crops = [
+  /*
+    今回確認したい代表日。
+
+    実データが入っている日を選んでいるので、
+    位置が正しければ数字を目視しやすい。
+  */
+  const sampleDays = [
+    7,
+    12,
+    14,
+    19,
+    21,
+    26,
+    28,
+  ];
+
+  /*
+    横方向は、これまで確認した位置を使用。
+  */
+  const columns = [
     {
       key: "patients",
       label: "実患者",
       x: 0.438,
-      y: 0.035,
       w: 0.030,
-      h: 0.755,
-      scale: 2.2,
-      whitelist: "0123456789",
     },
     {
       key: "insurance",
       label: "保険診療分",
       x: 0.495,
-      y: 0.035,
       w: 0.055,
-      h: 0.755,
-      scale: 1.8,
-      whitelist: "0123456789,",
     },
     {
       key: "care",
       label: "介護保険",
       x: 0.735,
-      y: 0.035,
       w: 0.060,
-      h: 0.755,
-      scale: 1.8,
-      whitelist: "0123456789,",
     },
   ];
 
   function handleFiles(event) {
-    const selected = Array.from(event.target.files || []);
+    const selected = Array.from(
+      event.target.files || []
+    );
 
     setFiles(selected);
-    setResults([]);
-    setElapsed(null);
-    setEngineTime(null);
-    setProgress(0);
-    setStatusText("");
+    setPreviews([]);
     setError("");
   }
 
-  function clamp(value) {
-    return Math.max(0, Math.min(255, value));
-  }
-
-  function cropAndEnhanceImage(file, crop) {
+  function loadImage(file) {
     return new Promise((resolve, reject) => {
-      const img = new Image();
+      const image = new Image();
       const url = URL.createObjectURL(file);
 
-      img.onload = () => {
-        try {
-          const sx = Math.floor(img.width * crop.x);
-          const sy = Math.floor(img.height * crop.y);
-          const sw = Math.floor(img.width * crop.w);
-          const sh = Math.floor(img.height * crop.h);
-
-          const scale = crop.scale || 1.8;
-
-          const canvas = document.createElement("canvas");
-
-          canvas.width = Math.max(
-            1,
-            Math.floor(sw * scale)
-          );
-
-          canvas.height = Math.max(
-            1,
-            Math.floor(sh * scale)
-          );
-
-          const ctx = canvas.getContext("2d", {
-            willReadFrequently: true,
-          });
-
-          /*
-            モニター撮影画像なので、
-            無理に二値化せず拡大してから
-            グレースケール＋コントラスト強調します。
-          */
-          ctx.imageSmoothingEnabled = true;
-          ctx.imageSmoothingQuality = "high";
-
-          ctx.drawImage(
-            img,
-            sx,
-            sy,
-            sw,
-            sh,
-            0,
-            0,
-            canvas.width,
-            canvas.height
-          );
-
-          const imageData = ctx.getImageData(
-            0,
-            0,
-            canvas.width,
-            canvas.height
-          );
-
-          const data = imageData.data;
-
-          /*
-            1.0 = 元のコントラスト
-            1.65 = 少し強め
-          */
-          const contrast = 1.65;
-
-          for (let i = 0; i < data.length; i += 4) {
-            const gray =
-              data[i] * 0.299 +
-              data[i + 1] * 0.587 +
-              data[i + 2] * 0.114;
-
-            /*
-              完全な白黒にはせず、
-              階調を残したまま数字を強調します。
-            */
-            let adjusted =
-              (gray - 128) * contrast + 128;
-
-            adjusted = clamp(adjusted);
-
-            /*
-              背景を少し明るく寄せる
-            */
-            adjusted =
-              adjusted > 175
-                ? clamp(adjusted + 18)
-                : adjusted;
-
-            data[i] = adjusted;
-            data[i + 1] = adjusted;
-            data[i + 2] = adjusted;
-            data[i + 3] = 255;
-          }
-
-          ctx.putImageData(imageData, 0, 0);
-
-          canvas.toBlob(
-            (blob) => {
-              URL.revokeObjectURL(url);
-
-              if (!blob) {
-                reject(
-                  new Error("画像変換に失敗しました")
-                );
-                return;
-              }
-
-              resolve(blob);
-            },
-            "image/png",
-            1
-          );
-        } catch (e) {
-          URL.revokeObjectURL(url);
-          reject(e);
-        }
+      image.onload = () => {
+        URL.revokeObjectURL(url);
+        resolve(image);
       };
 
-      img.onerror = () => {
+      image.onerror = () => {
         URL.revokeObjectURL(url);
-
         reject(
           new Error("画像を読み込めませんでした")
         );
       };
 
-      img.src = url;
+      image.src = url;
     });
   }
 
-  function cleanText(text) {
-    return String(text || "")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      .join("\n");
+  function createDayPreview(image, day) {
+    /*
+      対象日の中心位置。
+    */
+    const centerY =
+      image.height *
+      (
+        row1Center +
+        (day - 1) * rowStep
+      );
+
+    /*
+      1行分だけ切り出す。
+
+      行間隔の約72%を使い、
+      上下の隣接行をなるべく入れない。
+    */
+    const rowHeight =
+      image.height *
+      rowStep *
+      0.72;
+
+    const sourceY =
+      centerY - rowHeight / 2;
+
+    /*
+      3セルを横に並べた確認画像を作る。
+    */
+    const scale = 3;
+
+    const gap = 18;
+
+    const widths = columns.map(
+      (column) =>
+        Math.floor(
+          image.width *
+          column.w *
+          scale
+        )
+    );
+
+    const outputHeight =
+      Math.max(
+        45,
+        Math.floor(
+          rowHeight * scale
+        )
+      );
+
+    const outputWidth =
+      widths.reduce(
+        (sum, value) => sum + value,
+        0
+      ) +
+      gap * (columns.length - 1);
+
+    const canvas =
+      document.createElement("canvas");
+
+    canvas.width = outputWidth;
+    canvas.height = outputHeight;
+
+    const ctx =
+      canvas.getContext("2d");
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    let destinationX = 0;
+
+    columns.forEach(
+      (column, index) => {
+        const sourceX =
+          image.width * column.x;
+
+        const sourceWidth =
+          image.width * column.w;
+
+        const destinationWidth =
+          widths[index];
+
+        ctx.drawImage(
+          image,
+          sourceX,
+          sourceY,
+          sourceWidth,
+          rowHeight,
+          destinationX,
+          0,
+          destinationWidth,
+          outputHeight
+        );
+
+        destinationX +=
+          destinationWidth + gap;
+      }
+    );
+
+    return canvas.toDataURL(
+      "image/jpeg",
+      0.95
+    );
   }
 
-  async function analyzeImages() {
-    if (files.length === 0 || isAnalyzing) {
+  async function makePreviews() {
+    if (files.length === 0) {
       return;
     }
 
-    setIsAnalyzing(true);
-    setProgress(0);
-    setResults([]);
-    setElapsed(null);
-    setEngineTime(null);
+    setIsProcessing(true);
     setError("");
-
-    const totalStarted = performance.now();
-
-    let worker;
+    setPreviews([]);
 
     try {
-      setStatusText(
-        "OCRエンジンを準備しています…"
-      );
-
-      const engineStarted = performance.now();
-
-      worker = await createWorker("eng", 1, {
-        logger: (message) => {
-          if (
-            message.status ===
-            "recognizing text"
-          ) {
-            setProgress(
-              Math.round(
-                (message.progress || 0) * 100
-              )
-            );
-          }
-        },
-      });
-
-      const engineFinished = performance.now();
-
-      setEngineTime(
-        (
-          (engineFinished - engineStarted) /
-          1000
-        ).toFixed(1)
-      );
-
-      /*
-        Sparse Text モード。
-        空欄が多い縦長の帳票列に向いています。
-      */
-      await worker.setParameters({
-        preserve_interword_spaces: "1",
-        tessedit_pageseg_mode: "11",
-        user_defined_dpi: "300",
-      });
-
       const output = [];
 
       for (
@@ -265,97 +219,36 @@ export default function App() {
       ) {
         const file = files[fileIndex];
 
-        const columnResults = {};
-        const timings = {};
+        const image =
+          await loadImage(file);
 
-        for (
-          let cropIndex = 0;
-          cropIndex < crops.length;
-          cropIndex++
-        ) {
-          const crop = crops[cropIndex];
-
-          setStatusText(
-            `${fileIndex + 1}/${
-              files.length
-            }枚目：${crop.label}を解析中…`
-          );
-
-          setProgress(0);
-
-          const columnStarted =
-            performance.now();
-
-          const blob =
-            await cropAndEnhanceImage(
-              file,
-              crop
-            );
-
-          /*
-            列ごとに許可文字を変更。
-          */
-          await worker.setParameters({
-            tessedit_char_whitelist:
-              crop.whitelist,
-            preserve_interword_spaces: "1",
-            tessedit_pageseg_mode: "11",
-            user_defined_dpi: "300",
-          });
-
-          const recognition =
-            await worker.recognize(blob);
-
-          const columnFinished =
-            performance.now();
-
-          columnResults[crop.key] =
-            cleanText(
-              recognition.data.text
-            );
-
-          timings[crop.key] = (
-            (columnFinished -
-              columnStarted) /
-            1000
-          ).toFixed(1);
-        }
+        const rows =
+          sampleDays.map((day) => ({
+            day,
+            imageUrl:
+              createDayPreview(
+                image,
+                day
+              ),
+          }));
 
         output.push({
           fileName: file.name,
-          ...columnResults,
-          timings,
+          width: image.width,
+          height: image.height,
+          rows,
         });
       }
 
-      const totalFinished =
-        performance.now();
-
-      setElapsed(
-        (
-          (totalFinished -
-            totalStarted) /
-          1000
-        ).toFixed(1)
-      );
-
-      setResults(output);
-      setProgress(100);
-      setStatusText("解析完了");
+      setPreviews(output);
     } catch (e) {
       console.error(e);
 
       setError(
-        "OCR解析中にエラーが発生しました。"
+        "切り抜き確認画像の作成に失敗しました。"
       );
-
-      setStatusText("");
     } finally {
-      if (worker) {
-        await worker.terminate();
-      }
-
-      setIsAnalyzing(false);
+      setIsProcessing(false);
     }
   }
 
@@ -363,10 +256,15 @@ export default function App() {
     <main className="page">
       <section className="app">
         <header>
-          <div className="logo">歯</div>
+          <div className="logo">
+            歯
+          </div>
 
           <div>
-            <h1>訪問診療OCR</h1>
+            <h1>
+              訪問診療OCR
+            </h1>
+
             <p>
               診療日別集計表 → Excel
             </p>
@@ -387,18 +285,22 @@ export default function App() {
             スクリーンショットを選択
           </h2>
 
+          <p className="description">
+            今回はOCRせず、
+            1日ごとの行位置だけ確認します。
+          </p>
+
           <input
             ref={inputRef}
             className="hidden-input"
             type="file"
             accept="image/*"
-            multiple
             onChange={handleFiles}
           />
 
           <button
             className="select-button"
-            disabled={isAnalyzing}
+            disabled={isProcessing}
             onClick={() =>
               inputRef.current?.click()
             }
@@ -408,10 +310,7 @@ export default function App() {
 
           {files.length > 0 && (
             <div className="selected">
-              <strong>
-                {files.length}枚
-              </strong>
-              選択しました
+              {files[0].name}
             </div>
           )}
         </section>
@@ -421,12 +320,84 @@ export default function App() {
             STEP 2
           </span>
 
-          <h2>3列OCR</h2>
+          <h2>
+            行位置を調整
+          </h2>
 
           <p className="description">
-            グレースケール＋
-            コントラスト補正で解析します。
+            まず初期値のまま確認してください。
+            ズレている場合だけスライダーを調整します。
           </p>
+
+          <div
+            style={{
+              marginTop: "20px",
+            }}
+          >
+            <label
+              style={{
+                display: "block",
+                fontWeight: 700,
+                marginBottom: "8px",
+              }}
+            >
+              1日目の位置：
+              {row1Center.toFixed(4)}
+            </label>
+
+            <input
+              type="range"
+              min="0.040"
+              max="0.075"
+              step="0.0005"
+              value={row1Center}
+              onChange={(event) =>
+                setRow1Center(
+                  Number(
+                    event.target.value
+                  )
+                )
+              }
+              style={{
+                width: "100%",
+              }}
+            />
+          </div>
+
+          <div
+            style={{
+              marginTop: "24px",
+            }}
+          >
+            <label
+              style={{
+                display: "block",
+                fontWeight: 700,
+                marginBottom: "8px",
+              }}
+            >
+              行間隔：
+              {rowStep.toFixed(4)}
+            </label>
+
+            <input
+              type="range"
+              min="0.0220"
+              max="0.0320"
+              step="0.0002"
+              value={rowStep}
+              onChange={(event) =>
+                setRowStep(
+                  Number(
+                    event.target.value
+                  )
+                )
+              }
+              style={{
+                width: "100%",
+              }}
+            />
+          </div>
 
           <button
             className={
@@ -436,53 +407,30 @@ export default function App() {
             }
             disabled={
               files.length === 0 ||
-              isAnalyzing
+              isProcessing
             }
-            onClick={analyzeImages}
+            onClick={makePreviews}
+            style={{
+              marginTop: "26px",
+            }}
           >
-            {isAnalyzing
-              ? "解析中…"
-              : "必要な3列だけ解析"}
+            {isProcessing
+              ? "作成中…"
+              : "行位置を確認"}
           </button>
 
-          {statusText && (
-            <div className="ocr-status">
-              <p>{statusText}</p>
-
-              <div className="progress-track">
-                <div
-                  className="progress-bar"
-                  style={{
-                    width: `${progress}%`,
-                  }}
-                />
-              </div>
-            </div>
-          )}
-
-          {elapsed && (
-            <div className="selected">
-              <div>
-                総解析時間：
-                <strong>
-                  {elapsed}秒
-                </strong>
-              </div>
-
-              {engineTime && (
-                <div
-                  style={{
-                    marginTop: "6px",
-                  }}
-                >
-                  OCR準備：
-                  <strong>
-                    {engineTime}秒
-                  </strong>
-                </div>
-              )}
-            </div>
-          )}
+          <p
+            style={{
+              margin:
+                "14px 0 0",
+              color: "#64748b",
+              fontSize: "12px",
+              lineHeight: 1.6,
+            }}
+          >
+            スライダーを変更したら、
+            もう一度「行位置を確認」を押してください。
+          </p>
 
           {error && (
             <div className="error-message">
@@ -491,134 +439,107 @@ export default function App() {
           )}
         </section>
 
-        {results.map(
-          (result, index) => (
+        {previews.map(
+          (item, fileIndex) => (
             <section
               className="card"
-              key={`${result.fileName}-${index}`}
+              key={`${item.fileName}-${fileIndex}`}
             >
               <span className="step">
                 STEP 3
               </span>
 
-              <h2>OCR結果</h2>
+              <h2>
+                1日単位の切り抜き確認
+              </h2>
 
               <p className="description">
-                3列を個別に読み取った結果です。
+                左から
+                「実患者 / 保険診療分 /
+                介護保険」です。
               </p>
 
-              <strong>
-                {result.fileName}
-              </strong>
-
               <div
                 style={{
-                  marginTop: "14px",
-                  padding: "12px",
-                  borderRadius: "10px",
+                  marginBottom: "18px",
+                  padding: "10px",
                   background: "#f8fafc",
+                  borderRadius: "10px",
                   fontSize: "12px",
-                  lineHeight: "1.7",
+                  color: "#64748b",
                 }}
               >
-                <div>
-                  実患者：
-                  {result.timings.patients}秒
-                </div>
-
-                <div>
-                  保険診療分：
-                  {result.timings.insurance}秒
-                </div>
-
-                <div>
-                  介護保険：
-                  {result.timings.care}秒
-                </div>
+                元画像：
+                {item.width}
+                ×
+                {item.height}
               </div>
 
-              <div
-                style={{
-                  overflowX: "auto",
-                  marginTop: "16px",
-                }}
-              >
-                <table
-                  style={{
-                    width: "100%",
-                    borderCollapse:
-                      "collapse",
-                    fontSize: "13px",
-                  }}
-                >
-                  <thead>
-                    <tr>
-                      <th style={cellStyle}>
-                        実患者
-                      </th>
+              {item.rows.map(
+                (row) => (
+                  <div
+                    key={row.day}
+                    style={{
+                      marginBottom:
+                        "24px",
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize:
+                          "17px",
+                        fontWeight:
+                          800,
+                        marginBottom:
+                          "8px",
+                      }}
+                    >
+                      {row.day}日
+                    </div>
 
-                      <th style={cellStyle}>
-                        保険診療分
-                      </th>
-
-                      <th style={cellStyle}>
-                        介護保険
-                      </th>
-                    </tr>
-                  </thead>
-
-                  <tbody>
-                    <tr>
-                      <td style={cellStyle}>
-                        <pre
-                          style={preStyle}
-                        >
-                          {result.patients}
-                        </pre>
-                      </td>
-
-                      <td style={cellStyle}>
-                        <pre
-                          style={preStyle}
-                        >
-                          {result.insurance}
-                        </pre>
-                      </td>
-
-                      <td style={cellStyle}>
-                        <pre
-                          style={preStyle}
-                        >
-                          {result.care}
-                        </pre>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
+                    <div
+                      style={{
+                        padding:
+                          "10px",
+                        background:
+                          "#f8fafc",
+                        border:
+                          "1px solid #cbd5e1",
+                        borderRadius:
+                          "12px",
+                        overflowX:
+                          "auto",
+                      }}
+                    >
+                      <img
+                        src={
+                          row.imageUrl
+                        }
+                        alt={`${row.day}日`}
+                        style={{
+                          display:
+                            "block",
+                          maxWidth:
+                            "none",
+                          height:
+                            "72px",
+                          width:
+                            "auto",
+                        }}
+                      />
+                    </div>
+                  </div>
+                )
+              )}
             </section>
           )
         )}
 
         <footer>
-          次はOCR結果を日付ごとの表に変換します
+          行位置が決まったら、
+          次に1日単位OCRへ進みます
         </footer>
       </section>
     </main>
   );
 }
-
-const cellStyle = {
-  border: "1px solid #cbd5e1",
-  verticalAlign: "top",
-  padding: "8px",
-  minWidth: "110px",
-};
-
-const preStyle = {
-  margin: 0,
-  whiteSpace: "pre-wrap",
-  fontFamily: "monospace",
-  lineHeight: 1.5,
-  fontSize: "13px",
-};
