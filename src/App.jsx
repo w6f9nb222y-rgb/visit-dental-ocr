@@ -83,13 +83,13 @@ export default function App() {
     setPreviews([]);
 const crops = [
   {
-    key: "patients",
-    label: "実患者",
-    x: 0.420,
-    y: 0.035,
-    w: 0.035,
-    h: 0.755,
-  },
+  key: "patients",
+  label: "実患者",
+  x: 0.414,
+  y: 0.035,
+  w: 0.050,
+  h: 0.755,
+},
   {
     key: "insurance",
     label: "保険診療分（点数）",
