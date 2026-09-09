@@ -8,20 +8,13 @@ export default function App() {
   const [progress, setProgress] = useState(0);
   const [rows, setRows] = useState([]);
   const [elapsed, setElapsed] = useState(null);
+  const [geometry, setGeometry] = useState(null);
   const [error, setError] = useState("");
 
   const inputRef = useRef(null);
 
   /*
-    縦方向。
-    これまでの校正で使用した値。
-  */
-  const ROW_1_CENTER = 0.0550;
-  const ROW_STEP = 0.0267;
-
-  /*
-    横方向。
-    Safari上の目視校正で確定した値。
+    前回、元画像上で目視校正した横座標。
   */
   const COLUMNS = {
     patients: {
@@ -43,6 +36,17 @@ export default function App() {
     },
   };
 
+  /*
+    日付数字「1〜31」がある左側の列。
+
+    この範囲の黒さを調べて
+    31行の位置を自動推定する。
+  */
+  const DATE_COLUMN = {
+    x: 0.190,
+    w: 0.020,
+  };
+
   function handleFile(event) {
     const selected = event.target.files?.[0];
 
@@ -51,6 +55,7 @@ export default function App() {
     setFile(selected);
     setRows([]);
     setElapsed(null);
+    setGeometry(null);
     setProgress(0);
     setStatusText("");
     setError("");
@@ -86,61 +91,251 @@ export default function App() {
   }
 
   /*
-    1日×1セルだけ切り出す。
+    -----------------------------------
+    行位置の自動検出
+    -----------------------------------
+
+    1日目の中心位置と1日ごとの間隔を
+    いろいろ試して、
+
+    「1〜31の日付数字の上を最も正確に通る」
+    組み合わせを探す。
+  */
+  function detectRowGeometry(image) {
+    const canvas =
+      document.createElement("canvas");
+
+    canvas.width = image.width;
+    canvas.height = image.height;
+
+    const ctx = canvas.getContext("2d", {
+      willReadFrequently: true,
+    });
+
+    ctx.drawImage(image, 0, 0);
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+    const data = imageData.data;
+
+    const xStart = Math.floor(
+      image.width * DATE_COLUMN.x
+    );
+
+    const xEnd = Math.floor(
+      image.width *
+        (DATE_COLUMN.x + DATE_COLUMN.w)
+    );
+
+    /*
+      指定したY周辺にどれくらい
+      黒い画素があるかを返す。
+
+      日付数字の中心なら高得点になる。
+    */
+    function darknessAt(yRatio) {
+      const centerY =
+        Math.floor(image.height * yRatio);
+
+      const halfHeight =
+        Math.max(
+          3,
+          Math.floor(image.height * 0.005)
+        );
+
+      const yStart =
+        Math.max(0, centerY - halfHeight);
+
+      const yEnd =
+        Math.min(
+          image.height - 1,
+          centerY + halfHeight
+        );
+
+      let darkness = 0;
+      let count = 0;
+
+      for (
+        let y = yStart;
+        y <= yEnd;
+        y++
+      ) {
+        for (
+          let x = xStart;
+          x <= xEnd;
+          x++
+        ) {
+          const index =
+            (y * image.width + x) * 4;
+
+          const gray =
+            data[index] * 0.299 +
+            data[index + 1] * 0.587 +
+            data[index + 2] * 0.114;
+
+          /*
+            暗い画素ほど高得点。
+          */
+          if (gray < 170) {
+            darkness +=
+              (170 - gray);
+          }
+
+          count++;
+        }
+      }
+
+      return count > 0
+        ? darkness / count
+        : 0;
+    }
+
+    let best = {
+      row1: 0.055,
+      step: 0.0240,
+      score: -Infinity,
+    };
+
+    /*
+      画像撮影位置が多少変わっても
+      対応できる範囲を探索する。
+    */
+    for (
+      let row1 = 0.045;
+      row1 <= 0.075;
+      row1 += 0.0005
+    ) {
+      for (
+        let step = 0.0215;
+        step <= 0.0265;
+        step += 0.0001
+      ) {
+        let score = 0;
+
+        for (
+          let day = 1;
+          day <= 31;
+          day++
+        ) {
+          const y =
+            row1 +
+            (day - 1) * step;
+
+          /*
+            31日目が画像外なら除外。
+          */
+          if (y >= 0.90) {
+            score = -Infinity;
+            break;
+          }
+
+          score += darknessAt(y);
+        }
+
+        if (score > best.score) {
+          best = {
+            row1,
+            step,
+            score,
+          };
+        }
+      }
+    }
+
+    return {
+      row1: best.row1,
+      step: best.step,
+      score: best.score,
+    };
+  }
+
+  /*
+    1日×1セルを切り出して
+    OCR用画像へ変換する。
   */
   function createCellBlob(
     image,
     day,
-    columnKey
+    columnKey,
+    rowGeometry
   ) {
     return new Promise((resolve, reject) => {
       try {
         const column =
           COLUMNS[columnKey];
 
-        /*
-          対象日の中心位置
-        */
         const centerY =
           image.height *
           (
-            ROW_1_CENTER +
-            (day - 1) * ROW_STEP
+            rowGeometry.row1 +
+            (day - 1) *
+              rowGeometry.step
           );
 
         /*
-          隣の行をなるべく含めない。
-          ただし撮影時の少しの傾きには
-          対応できるよう若干余裕を持たせる。
+          1行の約70%だけ使用。
+
+          隣の行の数字を
+          OCRが拾いにくくする。
         */
         const rowHeight =
           image.height *
-          ROW_STEP *
-          0.78;
+          rowGeometry.step *
+          0.70;
 
         const sourceY =
-          centerY - rowHeight / 2;
-
-        const sourceX =
-          image.width * column.x;
-
-        const sourceWidth =
-          image.width * column.w;
+          centerY -
+          rowHeight / 2;
 
         /*
-          小さい数字なので拡大。
-          実患者は細い列なので少し大きめ。
+          斜め撮影への余裕として
+          横幅を少しだけ増やす。
         */
+        let extraWidth = 0;
+
+        if (
+          columnKey ===
+          "insurance"
+        ) {
+          extraWidth = 0.006;
+        }
+
+        if (
+          columnKey === "care"
+        ) {
+          extraWidth = 0.010;
+        }
+
+        const sourceX =
+          image.width *
+          (
+            column.x -
+            extraWidth / 2
+          );
+
+        const sourceWidth =
+          image.width *
+          (
+            column.w +
+            extraWidth
+          );
+
         const scale =
           columnKey === "patients"
-            ? 4
-            : 3;
+            ? 5
+            : 4;
 
         const canvas =
           document.createElement("canvas");
 
         canvas.width = Math.max(
-          180,
+          200,
           Math.floor(
             sourceWidth * scale
           )
@@ -167,8 +362,11 @@ export default function App() {
           canvas.height
         );
 
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
+        ctx.imageSmoothingEnabled =
+          true;
+
+        ctx.imageSmoothingQuality =
+          "high";
 
         ctx.drawImage(
           image,
@@ -183,11 +381,8 @@ export default function App() {
         );
 
         /*
-          モニター撮影画像なので
-          強制的な白黒化はしない。
-
-          グレースケール＋軽い
-          コントラスト強調だけ行う。
+          モニター撮影時のモアレを
+          完全二値化せずに抑える。
         */
         const imageData =
           ctx.getImageData(
@@ -197,20 +392,20 @@ export default function App() {
             canvas.height
           );
 
-        const data =
+        const pixels =
           imageData.data;
 
-        const contrast = 1.45;
+        const contrast = 1.35;
 
         for (
           let i = 0;
-          i < data.length;
+          i < pixels.length;
           i += 4
         ) {
           const gray =
-            data[i] * 0.299 +
-            data[i + 1] * 0.587 +
-            data[i + 2] * 0.114;
+            pixels[i] * 0.299 +
+            pixels[i + 1] * 0.587 +
+            pixels[i + 2] * 0.114;
 
           let value =
             (gray - 128) *
@@ -220,19 +415,17 @@ export default function App() {
           value = clamp(value);
 
           /*
-            明るい背景はさらに
-            少し白側へ寄せる。
+            背景だけ少し明るくする。
           */
-          if (value > 185) {
-            value = clamp(
-              value + 15
-            );
+          if (value > 190) {
+            value =
+              clamp(value + 12);
           }
 
-          data[i] = value;
-          data[i + 1] = value;
-          data[i + 2] = value;
-          data[i + 3] = 255;
+          pixels[i] = value;
+          pixels[i + 1] = value;
+          pixels[i + 2] = value;
+          pixels[i + 3] = 255;
         }
 
         ctx.putImageData(
@@ -284,21 +477,24 @@ export default function App() {
   }
 
   function formatNumber(value) {
-    return Number(value || 0)
-      .toLocaleString("ja-JP");
+    return Number(
+      value || 0
+    ).toLocaleString("ja-JP");
   }
 
   async function recognizeCell(
     worker,
     image,
     day,
-    columnKey
+    columnKey,
+    rowGeometry
   ) {
     const blob =
       await createCellBlob(
         image,
         day,
-        columnKey
+        columnKey,
+        rowGeometry
       );
 
     await worker.setParameters({
@@ -306,8 +502,15 @@ export default function App() {
         columnKey === "patients"
           ? "0123456789"
           : "0123456789,",
+
+      /*
+        1セルに1個の数字。
+      */
       tessedit_pageseg_mode: "7",
-      preserve_interword_spaces: "0",
+
+      preserve_interword_spaces:
+        "0",
+
       user_defined_dpi: "300",
     });
 
@@ -333,6 +536,7 @@ export default function App() {
     setIsAnalyzing(true);
     setRows([]);
     setElapsed(null);
+    setGeometry(null);
     setError("");
     setProgress(0);
 
@@ -343,12 +547,31 @@ export default function App() {
 
     try {
       setStatusText(
-        "画像を準備しています…"
+        "画像を読み込んでいます…"
       );
 
       const image =
         await loadImage(file);
 
+      /*
+        STEP 1
+        行位置を自動検出。
+      */
+      setStatusText(
+        "1〜31日の行位置を自動検出しています…"
+      );
+
+      const rowGeometry =
+        detectRowGeometry(image);
+
+      setGeometry(rowGeometry);
+
+      setProgress(10);
+
+      /*
+        STEP 2
+        OCR準備。
+      */
       setStatusText(
         "OCRエンジンを準備しています…"
       );
@@ -362,12 +585,7 @@ export default function App() {
       const activeRows = [];
 
       /*
-        STEP 1
-
-        まず実患者だけ31日読む。
-
-        患者0の日は保険・介護を
-        OCRしないので高速化できる。
+        まず実患者だけ読む。
       */
       for (
         let day = 1;
@@ -379,41 +597,50 @@ export default function App() {
         );
 
         setProgress(
-          Math.round(
-            (day / 31) * 45
-          )
+          10 +
+            Math.round(
+              (day / 31) * 40
+            )
         );
 
-        const patientResult =
+        const result =
           await recognizeCell(
             worker,
             image,
             day,
-            "patients"
+            "patients",
+            rowGeometry
           );
 
+        /*
+          患者数としてあり得そうな
+          1〜99だけ採用。
+
+          例えばモアレを904などと
+          誤認識した場合は除外する。
+        */
         if (
-          patientResult.value > 0
+          result.value >= 1 &&
+          result.value <= 99
         ) {
           activeRows.push({
             day,
             patients:
-              patientResult.value,
+              result.value,
             patientsRaw:
-              patientResult.raw,
+              result.raw,
           });
         }
       }
 
       /*
-        STEP 2
-
-        患者がいた日だけ
-        保険・介護を読む。
+        患者がいる日だけ
+        保険・介護をOCR。
       */
       for (
         let index = 0;
-        index < activeRows.length;
+        index <
+        activeRows.length;
         index++
       ) {
         const row =
@@ -428,7 +655,8 @@ export default function App() {
             worker,
             image,
             row.day,
-            "insurance"
+            "insurance",
+            rowGeometry
           );
 
         setStatusText(
@@ -440,7 +668,8 @@ export default function App() {
             worker,
             image,
             row.day,
-            "care"
+            "care",
+            rowGeometry
           );
 
         row.insurance =
@@ -460,27 +689,28 @@ export default function App() {
           row.care;
 
         /*
-          OCR確認用。
-          不自然な数字は黄色表示する。
+          通常の今回の帳票から
+          明らかに外れた数字は警告。
         */
         row.warning =
-          row.patients > 99 ||
+          row.insurance === 0 ||
+          row.care === 0 ||
           row.insurance >
-            100000 ||
+            50000 ||
           row.care >
-            100000;
+            50000;
 
         setProgress(
-          45 +
+          50 +
             Math.round(
               (
                 (index + 1) /
                 Math.max(
-                  1,
-                  activeRows.length
+                  activeRows.length,
+                  1
                 )
               ) *
-                55
+                50
             )
         );
       }
@@ -507,7 +737,7 @@ export default function App() {
       console.error(e);
 
       setError(
-        "OCR解析中にエラーが発生しました。"
+        "解析中にエラーが発生しました。"
       );
 
       setStatusText("");
@@ -555,8 +785,8 @@ export default function App() {
           </h2>
 
           <p className="description">
-            校正済み座標を使って、
-            1日1セル単位で読み取ります。
+            日付列から31行の位置を
+            自動検出して読み取ります。
           </p>
 
           <input
@@ -590,14 +820,8 @@ export default function App() {
           </span>
 
           <h2>
-            日別OCR
+            自動行検出＋日別OCR
           </h2>
-
-          <p className="description">
-            最初に実患者だけ確認し、
-            患者0の日は残りのOCRを
-            スキップします。
-          </p>
 
           <button
             className={
@@ -636,6 +860,40 @@ export default function App() {
             </div>
           )}
 
+          {geometry && (
+            <div
+              style={{
+                marginTop: "14px",
+                padding: "12px",
+                background:
+                  "#f8fafc",
+                borderRadius:
+                  "10px",
+                fontSize:
+                  "12px",
+                lineHeight: 1.7,
+              }}
+            >
+              <strong>
+                自動検出した行位置
+              </strong>
+
+              <br />
+
+              1日目：
+              {geometry.row1.toFixed(
+                4
+              )}
+
+              <br />
+
+              行間隔：
+              {geometry.step.toFixed(
+                4
+              )}
+            </div>
+          )}
+
           {elapsed && (
             <div className="selected">
               解析時間：
@@ -662,15 +920,12 @@ export default function App() {
               日別集計結果
             </h2>
 
-            <p className="description">
-              実患者・保険・介護を
-              日ごとにまとめました。
-            </p>
-
             <div
               style={{
-                overflowX: "auto",
-                marginTop: "16px",
+                overflowX:
+                  "auto",
+                marginTop:
+                  "16px",
               }}
             >
               <table
@@ -801,7 +1056,7 @@ export default function App() {
                     "12px",
                   fontSize:
                     "12px",
-                  lineHeight: 1.7,
+                  lineHeight: 1.8,
                 }}
               >
                 {rows.map(
@@ -812,7 +1067,7 @@ export default function App() {
                       }
                       style={{
                         padding:
-                          "8px 0",
+                          "9px 0",
                         borderBottom:
                           "1px solid #e2e8f0",
                       }}
@@ -847,8 +1102,8 @@ export default function App() {
         )}
 
         <footer>
-          次は年月・曜日判定と
-          Excel出力を追加します
+          日別OCRが安定したら、
+          年月・曜日・Excel出力を追加します
         </footer>
       </section>
     </main>
