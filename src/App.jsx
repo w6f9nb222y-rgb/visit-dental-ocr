@@ -81,38 +81,27 @@ export default function App() {
 
     setError("");
     setPreviews([]);
-
-    try {
-      const output = [];
-
-      /*
-        IMG_5412.jpeg の帳票レイアウトを基準にした
-        画面幅・高さに対する割合です。
-
-        次の画面で位置を目視確認して、
-        必要なら微調整します。
-      */
-      const crops = [
+const crops = [
   {
     key: "patients",
     label: "実患者",
-    x: 0.410,
+    x: 0.420,
     y: 0.035,
-    w: 0.050,
+    w: 0.035,
     h: 0.755,
   },
   {
     key: "insurance",
     label: "保険診療分（点数）",
-    x: 0.490,
+    x: 0.515,
     y: 0.035,
-    w: 0.075,
+    w: 0.070,
     h: 0.755,
   },
   {
     key: "care",
     label: "その他保険診療分（介護保険・点数）",
-    x: 0.710,
+    x: 0.755,
     y: 0.035,
     w: 0.070,
     h: 0.755,
