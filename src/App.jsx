@@ -1,53 +1,39 @@
 import { useRef, useState } from "react";
-import { createWorker } from "tesseract.js";
 
 export default function App() {
   const [files, setFiles] = useState([]);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [statusText, setStatusText] = useState("");
-  const [results, setResults] = useState([]);
+  const [previews, setPreviews] = useState([]);
   const [error, setError] = useState("");
   const inputRef = useRef(null);
 
   function handleFiles(event) {
     const selected = Array.from(event.target.files || []);
-
     setFiles(selected);
-    setResults([]);
-    setProgress(0);
-    setStatusText("");
+    setPreviews([]);
     setError("");
   }
 
-  async function makeNumericCrop(file) {
+  function cropImage(file, crop) {
     return new Promise((resolve, reject) => {
       const img = new Image();
       const url = URL.createObjectURL(file);
 
       img.onload = () => {
         try {
-          /*
-            今回の診療日別集計表では、
-            左側の日付・曜日・天気などを捨て、
-            実患者～保険点数～介護点数付近だけを切り出します。
-          */
-
-          const sx = Math.floor(img.width * 0.36);
-          const sy = Math.floor(img.height * 0.05);
-          const sw = Math.floor(img.width * 0.43);
-          const sh = Math.floor(img.height * 0.80);
-
-          // OCRしやすいように約2倍へ拡大
-          const scale = 2;
+          const sx = Math.floor(img.width * crop.x);
+          const sy = Math.floor(img.height * crop.y);
+          const sw = Math.floor(img.width * crop.w);
+          const sh = Math.floor(img.height * crop.h);
 
           const canvas = document.createElement("canvas");
-          canvas.width = sw * scale;
-          canvas.height = sh * scale;
 
-          const ctx = canvas.getContext("2d", {
-            willReadFrequently: true,
-          });
+          // プレビューは見やすいよう約1.5倍
+          const scale = 1.5;
+
+          canvas.width = Math.floor(sw * scale);
+          canvas.height = Math.floor(sh * scale);
+
+          const ctx = canvas.getContext("2d");
 
           ctx.drawImage(
             img,
@@ -61,49 +47,19 @@ export default function App() {
             canvas.height
           );
 
-          // グレースケール＋コントラスト強調＋2値化
-          const imageData = ctx.getImageData(
-            0,
-            0,
-            canvas.width,
-            canvas.height
-          );
-
-          const data = imageData.data;
-
-          for (let i = 0; i < data.length; i += 4) {
-            const gray =
-              data[i] * 0.299 +
-              data[i + 1] * 0.587 +
-              data[i + 2] * 0.114;
-
-            // モニター撮影の薄い文字も拾いやすくする
-            const value = gray < 180 ? 0 : 255;
-
-            data[i] = value;
-            data[i + 1] = value;
-            data[i + 2] = value;
-            data[i + 3] = 255;
-          }
-
-          ctx.putImageData(imageData, 0, 0);
-
           canvas.toBlob(
             (blob) => {
               URL.revokeObjectURL(url);
 
               if (!blob) {
-                reject(new Error("画像変換に失敗しました"));
+                reject(new Error("画像の切り抜きに失敗しました"));
                 return;
               }
 
-              resolve({
-                blob,
-                previewUrl: URL.createObjectURL(blob),
-              });
+              resolve(URL.createObjectURL(blob));
             },
-            "image/png",
-            1
+            "image/jpeg",
+            0.92
           );
         } catch (e) {
           URL.revokeObjectURL(url);
@@ -120,80 +76,71 @@ export default function App() {
     });
   }
 
-  async function analyzeImages() {
-    if (files.length === 0 || isAnalyzing) return;
+  async function makePreviews() {
+    if (files.length === 0) return;
 
-    setIsAnalyzing(true);
-    setProgress(0);
-    setResults([]);
     setError("");
-    setStatusText("数字専用OCRを準備しています…");
-
-    let worker;
+    setPreviews([]);
 
     try {
+      const output = [];
+
       /*
-        日本語ではなく英語OCRを使用。
-        今回欲しいのは数字なので、この方が誤認識を減らせます。
+        IMG_5412.jpeg の帳票レイアウトを基準にした
+        画面幅・高さに対する割合です。
+
+        次の画面で位置を目視確認して、
+        必要なら微調整します。
       */
-      worker = await createWorker("eng", 1, {
-        logger: (message) => {
-          if (message.status === "recognizing text") {
-            const value = Math.round(
-              (message.progress || 0) * 100
-            );
-
-            setProgress(value);
-          }
+      const crops = [
+        {
+          key: "patients",
+          label: "実患者",
+          x: 0.392,
+          y: 0.035,
+          w: 0.038,
+          h: 0.755,
         },
-      });
+        {
+          key: "insurance",
+          label: "保険診療分（点数）",
+          x: 0.462,
+          y: 0.035,
+          w: 0.080,
+          h: 0.755,
+        },
+        {
+          key: "care",
+          label: "その他保険診療分（介護保険・点数）",
+          x: 0.690,
+          y: 0.035,
+          w: 0.088,
+          h: 0.755,
+        },
+      ];
 
-      await worker.setParameters({
-        tessedit_char_whitelist: "0123456789,",
-        preserve_interword_spaces: "1",
-      });
+      for (const file of files) {
+        const cropResults = [];
 
-      const newResults = [];
+        for (const crop of crops) {
+          const imageUrl = await cropImage(file, crop);
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
+          cropResults.push({
+            ...crop,
+            imageUrl,
+          });
+        }
 
-        setStatusText(
-          `${i + 1}/${files.length}枚目：画像を補正しています…`
-        );
-
-        const processed = await makeNumericCrop(file);
-
-        setStatusText(
-          `${i + 1}/${files.length}枚目：数字を認識しています…`
-        );
-
-        setProgress(0);
-
-        const result = await worker.recognize(processed.blob);
-
-        newResults.push({
+        output.push({
           fileName: file.name,
-          text: result.data.text || "",
-          previewUrl: processed.previewUrl,
+          crops: cropResults,
         });
       }
 
-      setResults(newResults);
-      setProgress(100);
-      setStatusText("数字専用OCRが完了しました");
+      setPreviews(output);
     } catch (e) {
       console.error(e);
-
-      setError(
-        "OCR処理中にエラーが発生しました。もう一度お試しください。"
-      );
-    } finally {
-      if (worker) {
-        await worker.terminate();
-      }
-
-      setIsAnalyzing(false);
+      setError("切り抜き処理に失敗しました。");
     }
   }
 
@@ -214,11 +161,11 @@ export default function App() {
         </div>
 
         <section className="card">
-          <h2>診療実績を読み込む</h2>
+          <span className="step">STEP 1</span>
+          <h2>スクリーンショットを選択</h2>
 
           <p className="description">
-            まず数字部分だけを切り出し、
-            帳票専用OCRの精度を確認します。
+            今回はOCRせず、必要な列の切り抜き位置だけ確認します。
           </p>
 
           <input
@@ -232,7 +179,6 @@ export default function App() {
 
           <button
             className="select-button"
-            disabled={isAnalyzing}
             onClick={() => inputRef.current?.click()}
           >
             ＋ スクリーンショットを選択
@@ -240,8 +186,7 @@ export default function App() {
 
           {files.length > 0 && (
             <div className="selected">
-              <strong>{files.length}枚</strong>
-              の画像を選択しました
+              <strong>{files.length}枚</strong>選択しました
 
               <ul>
                 {files.map((file, index) => (
@@ -254,15 +199,9 @@ export default function App() {
           )}
         </section>
 
-        <section
-          className={
-            files.length === 0
-              ? "card disabled-card"
-              : "card"
-          }
-        >
+        <section className="card">
           <span className="step">STEP 2</span>
-          <h2>数字専用OCR</h2>
+          <h2>必要列を切り抜く</h2>
 
           <button
             className={
@@ -270,30 +209,11 @@ export default function App() {
                 ? "select-button"
                 : "disabled-button"
             }
-            disabled={
-              files.length === 0 || isAnalyzing
-            }
-            onClick={analyzeImages}
+            disabled={files.length === 0}
+            onClick={makePreviews}
           >
-            {isAnalyzing
-              ? "解析中…"
-              : "数字部分を解析"}
+            切り抜き位置を確認
           </button>
-
-          {statusText && (
-            <div className="ocr-status">
-              <p>{statusText}</p>
-
-              <div className="progress-track">
-                <div
-                  className="progress-bar"
-                  style={{
-                    width: `${progress}%`,
-                  }}
-                />
-              </div>
-            </div>
-          )}
 
           {error && (
             <div className="error-message">
@@ -302,52 +222,54 @@ export default function App() {
           )}
         </section>
 
-        {results.map((result, index) => (
+        {previews.map((item, fileIndex) => (
           <section
             className="card"
-            key={`${result.fileName}-${index}`}
+            key={`${item.fileName}-${fileIndex}`}
           >
             <span className="step">STEP 3</span>
-            <h2>数字認識テスト</h2>
+            <h2>切り抜き確認</h2>
 
             <p className="description">
-              下の画像がOCRに実際に渡した範囲です。
+              この3列だけを最終的にOCRします。
             </p>
 
-            <img
-              src={result.previewUrl}
-              alt="OCR対象"
-              style={{
-                width: "100%",
-                borderRadius: "12px",
-                border: "1px solid #e2e8f0",
-                marginBottom: "16px",
-              }}
-            />
+            <strong>{item.fileName}</strong>
 
-            <strong>{result.fileName}</strong>
+            {item.crops.map((crop) => (
+              <div
+                key={crop.key}
+                style={{ marginTop: "24px" }}
+              >
+                <h3
+                  style={{
+                    margin: "0 0 10px",
+                    fontSize: "16px",
+                  }}
+                >
+                  {crop.label}
+                </h3>
 
-            <pre
-              style={{
-                marginTop: "12px",
-                padding: "14px",
-                minHeight: "150px",
-                overflow: "auto",
-                whiteSpace: "pre-wrap",
-                background: "#f8fafc",
-                border: "1px solid #e2e8f0",
-                borderRadius: "12px",
-                fontSize: "14px",
-                lineHeight: "1.6",
-              }}
-            >
-              {result.text || "数字を認識できませんでした"}
-            </pre>
+                <img
+                  src={crop.imageUrl}
+                  alt={crop.label}
+                  style={{
+                    width: "100%",
+                    maxHeight: "650px",
+                    objectFit: "contain",
+                    objectPosition: "left top",
+                    background: "#f8fafc",
+                    border: "1px solid #cbd5e1",
+                    borderRadius: "12px",
+                  }}
+                />
+              </div>
+            ))}
           </section>
         ))}
 
         <footer>
-          診療画像はこの端末内で処理します
+          次の段階で、この3列だけ数字OCRします
         </footer>
       </section>
     </main>
