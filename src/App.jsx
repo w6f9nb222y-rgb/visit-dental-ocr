@@ -13,7 +13,7 @@ export default function App() {
   const inputRef = useRef(null);
 
   /*
-   * 現在かなり合っている位置は固定
+   * ここまでに合わせた座標は固定
    */
   const ROW_1_CENTER = 0.0550;
   const ROW_STEP = 0.0267;
@@ -23,16 +23,21 @@ export default function App() {
       label: "実患者",
       x: 0.4820,
       w: 0.0300,
+      maxDigits: 2,
     },
+
     insurance: {
       label: "保険診療分",
       x: 0.5280,
       w: 0.0700,
+      maxDigits: 5,
     },
+
     care: {
       label: "介護保険",
       x: 0.7970,
       w: 0.0600,
+      maxDigits: 5,
     },
   };
 
@@ -73,9 +78,9 @@ export default function App() {
   }
 
   /*
-   * --------------------------------------------------
-   * 元セル切り抜き
-   * --------------------------------------------------
+   * ==================================================
+   * セル切り抜き
+   * ==================================================
    */
 
   function makeRawCell(image, day, columnKey) {
@@ -85,9 +90,6 @@ export default function App() {
       image.height *
       (ROW_1_CENTER + (day - 1) * ROW_STEP);
 
-    /*
-     * 隣の行が入らない程度
-     */
     const sourceHeight =
       image.height *
       ROW_STEP *
@@ -106,16 +108,10 @@ export default function App() {
       document.createElement("canvas");
 
     canvas.width =
-      Math.max(
-        40,
-        Math.round(sourceWidth)
-      );
+      Math.max(40, Math.round(sourceWidth));
 
     canvas.height =
-      Math.max(
-        20,
-        Math.round(sourceHeight)
-      );
+      Math.max(20, Math.round(sourceHeight));
 
     const ctx =
       canvas.getContext("2d", {
@@ -149,28 +145,30 @@ export default function App() {
   }
 
   /*
-   * --------------------------------------------------
-   * モアレ低減
-   *
-   * 前回ほど強くは縮小しない。
-   * 0.72倍程度で高周波だけ少し均す。
-   * --------------------------------------------------
+   * ==================================================
+   * 軽いモアレ低減
+   * ==================================================
    */
 
   function reduceMoire(source) {
     const small =
       document.createElement("canvas");
 
+    /*
+     * 今回は強く縮小しない
+     */
+    const factor = 0.68;
+
     small.width =
       Math.max(
-        30,
-        Math.round(source.width * 0.72)
+        25,
+        Math.round(source.width * factor)
       );
 
     small.height =
       Math.max(
-        16,
-        Math.round(source.height * 0.72)
+        14,
+        Math.round(source.height * factor)
       );
 
     const sctx =
@@ -197,60 +195,16 @@ export default function App() {
       small.height
     );
 
-    /*
-     * OCR用に再拡大
-     */
-    const output =
-      document.createElement("canvas");
-
-    const targetHeight = 180;
-
-    const scale =
-      targetHeight / small.height;
-
-    output.width =
-      Math.max(
-        300,
-        Math.round(small.width * scale)
-      );
-
-    output.height =
-      targetHeight;
-
-    const ctx =
-      output.getContext("2d", {
-        willReadFrequently: true,
-      });
-
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(
-      0,
-      0,
-      output.width,
-      output.height
-    );
-
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = "high";
-
-    ctx.drawImage(
-      small,
-      0,
-      0,
-      output.width,
-      output.height
-    );
-
-    return output;
+    return small;
   }
 
   /*
-   * --------------------------------------------------
+   * ==================================================
    * グレースケール
-   * --------------------------------------------------
+   * ==================================================
    */
 
-  function makeGray(source) {
+  function grayscale(source) {
     const canvas =
       document.createElement("canvas");
 
@@ -274,11 +228,7 @@ export default function App() {
 
     const data = imageData.data;
 
-    for (
-      let i = 0;
-      i < data.length;
-      i += 4
-    ) {
+    for (let i = 0; i < data.length; i += 4) {
       const gray =
         data[i] * 0.299 +
         data[i + 1] * 0.587 +
@@ -296,115 +246,18 @@ export default function App() {
   }
 
   /*
-   * --------------------------------------------------
-   * 簡単な3x3ぼかし
-   *
-   * モニター画素の格子を少し平均化
-   * --------------------------------------------------
+   * ==================================================
+   * Otsu自動閾値
+   * ==================================================
    */
 
-  function blurCanvas(source) {
-    const canvas =
-      document.createElement("canvas");
-
-    canvas.width = source.width;
-    canvas.height = source.height;
-
-    const ctx =
-      canvas.getContext("2d", {
-        willReadFrequently: true,
-      });
-
-    ctx.drawImage(source, 0, 0);
-
-    const src =
-      ctx.getImageData(
-        0,
-        0,
-        canvas.width,
-        canvas.height
-      );
-
-    const out =
-      ctx.createImageData(
-        canvas.width,
-        canvas.height
-      );
-
-    const w = canvas.width;
-    const h = canvas.height;
-
-    for (
-      let y = 1;
-      y < h - 1;
-      y++
-    ) {
-      for (
-        let x = 1;
-        x < w - 1;
-        x++
-      ) {
-        let sum = 0;
-
-        for (
-          let dy = -1;
-          dy <= 1;
-          dy++
-        ) {
-          for (
-            let dx = -1;
-            dx <= 1;
-            dx++
-          ) {
-            const index =
-              (
-                (y + dy) * w +
-                (x + dx)
-              ) * 4;
-
-            sum += src.data[index];
-          }
-        }
-
-        const value =
-          Math.round(sum / 9);
-
-        const index =
-          (y * w + x) * 4;
-
-        out.data[index] = value;
-        out.data[index + 1] = value;
-        out.data[index + 2] = value;
-        out.data[index + 3] = 255;
-      }
-    }
-
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(
-      0,
-      0,
-      w,
-      h
-    );
-
-    ctx.putImageData(out, 0, 0);
-
-    return canvas;
-  }
-
-  /*
-   * --------------------------------------------------
-   * Otsu法による自動2値化
-   * --------------------------------------------------
-   */
-
-  function otsuThreshold(source) {
+  function getOtsuThreshold(source) {
     const ctx =
       source.getContext("2d", {
         willReadFrequently: true,
       });
 
-    const img =
+    const imageData =
       ctx.getImageData(
         0,
         0,
@@ -417,52 +270,37 @@ export default function App() {
 
     for (
       let i = 0;
-      i < img.data.length;
+      i < imageData.data.length;
       i += 4
     ) {
       histogram[
-        Math.round(img.data[i])
+        Math.round(imageData.data[i])
       ]++;
     }
 
     const total =
-      source.width *
-      source.height;
+      source.width * source.height;
 
     let sum = 0;
 
-    for (
-      let i = 0;
-      i < 256;
-      i++
-    ) {
+    for (let i = 0; i < 256; i++) {
       sum += i * histogram[i];
     }
 
     let sumB = 0;
     let weightB = 0;
-    let weightF = 0;
-
     let maxVariance = 0;
     let threshold = 128;
 
-    for (
-      let t = 0;
-      t < 256;
-      t++
-    ) {
+    for (let t = 0; t < 256; t++) {
       weightB += histogram[t];
 
-      if (weightB === 0) {
-        continue;
-      }
+      if (weightB === 0) continue;
 
-      weightF =
+      const weightF =
         total - weightB;
 
-      if (weightF === 0) {
-        break;
-      }
+      if (weightF === 0) break;
 
       sumB +=
         t * histogram[t];
@@ -471,24 +309,15 @@ export default function App() {
         sumB / weightB;
 
       const meanF =
-        (sum - sumB) /
-        weightF;
+        (sum - sumB) / weightF;
 
       const variance =
         weightB *
         weightF *
-        Math.pow(
-          meanB - meanF,
-          2
-        );
+        Math.pow(meanB - meanF, 2);
 
-      if (
-        variance >
-        maxVariance
-      ) {
-        maxVariance =
-          variance;
-
+      if (variance > maxVariance) {
+        maxVariance = variance;
         threshold = t;
       }
     }
@@ -497,9 +326,9 @@ export default function App() {
   }
 
   /*
-   * --------------------------------------------------
+   * ==================================================
    * 2値化
-   * --------------------------------------------------
+   * ==================================================
    */
 
   function makeBinary(source) {
@@ -517,7 +346,7 @@ export default function App() {
     ctx.drawImage(source, 0, 0);
 
     const threshold =
-      otsuThreshold(canvas);
+      getOtsuThreshold(canvas);
 
     const imageData =
       ctx.getImageData(
@@ -527,21 +356,17 @@ export default function App() {
         canvas.height
       );
 
-    const data =
-      imageData.data;
+    const data = imageData.data;
 
-    for (
-      let i = 0;
-      i < data.length;
-      i += 4
-    ) {
-      /*
-       * Otsu値を少し暗めに補正。
-       * 網目を拾いすぎないため。
-       */
+    /*
+     * 少し厳しめにしてモアレを落とす
+     */
+    const adjusted =
+      threshold - 12;
+
+    for (let i = 0; i < data.length; i += 4) {
       const value =
-        data[i] <
-        threshold - 8
+        data[i] < adjusted
           ? 0
           : 255;
 
@@ -561,12 +386,12 @@ export default function App() {
   }
 
   /*
-   * --------------------------------------------------
-   * 縦罫線除去
-   * --------------------------------------------------
+   * ==================================================
+   * 明らかな縦罫線を消す
+   * ==================================================
    */
 
-  function removeVerticalLines(source) {
+  function removeVerticalRules(source) {
     const canvas =
       document.createElement("canvas");
 
@@ -590,41 +415,33 @@ export default function App() {
 
     const data = imageData.data;
 
-    for (
-      let x = 0;
-      x < canvas.width;
-      x++
-    ) {
-      let black = 0;
+    for (let x = 0; x < canvas.width; x++) {
+      let darkCount = 0;
 
       for (
         let y = 0;
         y < canvas.height;
         y++
       ) {
-        const i =
-          (
-            y * canvas.width +
-            x
-          ) * 4;
+        const index =
+          (y * canvas.width + x) * 4;
 
-        if (data[i] < 40) {
-          black++;
+        if (data[index] < 50) {
+          darkCount++;
         }
       }
 
       /*
-       * 画面高さの55%以上
-       * 真っ黒なら罫線扱い。
+       * 高さの70%以上黒なら
+       * 罫線とみなす
        */
       if (
-        black /
-          canvas.height >
-        0.55
+        darkCount / canvas.height >
+        0.70
       ) {
         for (
-          let dx = -2;
-          dx <= 2;
+          let dx = -1;
+          dx <= 1;
           dx++
         ) {
           const px = x + dx;
@@ -641,17 +458,13 @@ export default function App() {
             y < canvas.height;
             y++
           ) {
-            const i =
-              (
-                y *
-                  canvas.width +
-                px
-              ) * 4;
+            const index =
+              (y * canvas.width + px) * 4;
 
-            data[i] = 255;
-            data[i + 1] = 255;
-            data[i + 2] = 255;
-            data[i + 3] = 255;
+            data[index] = 255;
+            data[index + 1] = 255;
+            data[index + 2] = 255;
+            data[index + 3] = 255;
           }
         }
       }
@@ -667,28 +480,37 @@ export default function App() {
   }
 
   /*
-   * --------------------------------------------------
-   * OCR用余白追加
-   * --------------------------------------------------
+   * ==================================================
+   * 上下のノイズを減らす
+   *
+   * 数字はセル中央付近にあるので
+   * 上下端を少し捨てる
+   * ==================================================
    */
 
-  function addPadding(source) {
-    const padX = 80;
-    const padY = 45;
+  function cropVerticalCenter(source) {
+    const top =
+      Math.floor(source.height * 0.12);
+
+    const bottom =
+      Math.floor(source.height * 0.88);
+
+    const height =
+      bottom - top;
 
     const canvas =
       document.createElement("canvas");
 
     canvas.width =
-      source.width +
-      padX * 2;
+      source.width;
 
     canvas.height =
-      source.height +
-      padY * 2;
+      height;
 
     const ctx =
-      canvas.getContext("2d");
+      canvas.getContext("2d", {
+        willReadFrequently: true,
+      });
 
     ctx.fillStyle = "#fff";
 
@@ -701,8 +523,490 @@ export default function App() {
 
     ctx.drawImage(
       source,
-      padX,
-      padY
+      0,
+      top,
+      source.width,
+      height,
+      0,
+      0,
+      source.width,
+      height
+    );
+
+    return canvas;
+  }
+
+  /*
+   * ==================================================
+   * 横方向の黒画素量から
+   * 1文字ずつ切り分ける
+   * ==================================================
+   */
+
+  function segmentCharacters(
+    binaryCanvas,
+    maxDigits
+  ) {
+    const ctx =
+      binaryCanvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    const w =
+      binaryCanvas.width;
+
+    const h =
+      binaryCanvas.height;
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        w,
+        h
+      );
+
+    const data =
+      imageData.data;
+
+    const columnInk =
+      new Array(w).fill(0);
+
+    /*
+     * 各X列に何個黒画素があるか
+     */
+    for (let x = 0; x < w; x++) {
+      let count = 0;
+
+      for (let y = 0; y < h; y++) {
+        const index =
+          (y * w + x) * 4;
+
+        if (data[index] < 80) {
+          count++;
+        }
+      }
+
+      columnInk[x] = count;
+    }
+
+    /*
+     * 少量のモアレは無視
+     */
+    const minimumInk =
+      Math.max(
+        1,
+        Math.floor(h * 0.08)
+      );
+
+    const active =
+      columnInk.map(
+        (count) =>
+          count >= minimumInk
+      );
+
+    /*
+     * 文字内の1～2px程度の隙間は
+     * 同一文字とみなす
+     */
+    const maxGap =
+      Math.max(
+        1,
+        Math.round(w * 0.012)
+      );
+
+    let previousActive = -999;
+
+    for (let x = 0; x < w; x++) {
+      if (!active[x]) continue;
+
+      if (
+        x - previousActive <=
+        maxGap + 1
+      ) {
+        for (
+          let xx = previousActive + 1;
+          xx < x;
+          xx++
+        ) {
+          if (xx >= 0) {
+            active[xx] = true;
+          }
+        }
+      }
+
+      previousActive = x;
+    }
+
+    /*
+     * 連続領域を抽出
+     */
+    const runs = [];
+
+    let start = null;
+
+    for (let x = 0; x <= w; x++) {
+      const on =
+        x < w
+          ? active[x]
+          : false;
+
+      if (on && start === null) {
+        start = x;
+      }
+
+      if (!on && start !== null) {
+        runs.push({
+          start,
+          end: x - 1,
+        });
+
+        start = null;
+      }
+    }
+
+    /*
+     * 極端に細いゴミを捨てる
+     */
+    let filtered =
+      runs.filter((run) => {
+        const width =
+          run.end -
+          run.start +
+          1;
+
+        return (
+          width >=
+          Math.max(
+            2,
+            Math.round(w * 0.012)
+          )
+        );
+      });
+
+    /*
+     * 候補が多過ぎたら
+     * 幅の大きいものを優先
+     */
+    if (
+      filtered.length >
+      maxDigits + 2
+    ) {
+      filtered =
+        filtered
+          .map((run, index) => ({
+            ...run,
+            index,
+            width:
+              run.end -
+              run.start +
+              1,
+          }))
+          .sort(
+            (a, b) =>
+              b.width - a.width
+          )
+          .slice(
+            0,
+            maxDigits + 2
+          )
+          .sort(
+            (a, b) =>
+              a.start - b.start
+          );
+    }
+
+    /*
+     * カンマらしい小さい領域を除外
+     */
+    if (
+      filtered.length >
+      maxDigits
+    ) {
+      const heights =
+        filtered.map((run) =>
+          getRunInkHeight(
+            binaryCanvas,
+            run.start,
+            run.end
+          )
+        );
+
+      const maxHeight =
+        Math.max(...heights);
+
+      filtered =
+        filtered.filter(
+          (run, index) =>
+            heights[index] >
+            maxHeight * 0.45
+        );
+    }
+
+    /*
+     * まだ多ければ上限まで
+     */
+    if (
+      filtered.length >
+      maxDigits
+    ) {
+      filtered =
+        filtered
+          .map((run) => ({
+            ...run,
+            ink:
+              getRunInkCount(
+                binaryCanvas,
+                run.start,
+                run.end
+              ),
+          }))
+          .sort(
+            (a, b) =>
+              b.ink - a.ink
+          )
+          .slice(0, maxDigits)
+          .sort(
+            (a, b) =>
+              a.start - b.start
+          );
+    }
+
+    const characterCanvases =
+      filtered.map((run) =>
+        makeCharacterCanvas(
+          binaryCanvas,
+          run.start,
+          run.end
+        )
+      );
+
+    return {
+      runs: filtered,
+      characters:
+        characterCanvases,
+    };
+  }
+
+  function getRunInkHeight(
+    canvas,
+    startX,
+    endX
+  ) {
+    const ctx =
+      canvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    const w = canvas.width;
+    const h = canvas.height;
+
+    const data =
+      ctx.getImageData(
+        0,
+        0,
+        w,
+        h
+      ).data;
+
+    let minY = h;
+    let maxY = -1;
+
+    for (
+      let x = startX;
+      x <= endX;
+      x++
+    ) {
+      for (let y = 0; y < h; y++) {
+        const index =
+          (y * w + x) * 4;
+
+        if (data[index] < 80) {
+          minY =
+            Math.min(minY, y);
+
+          maxY =
+            Math.max(maxY, y);
+        }
+      }
+    }
+
+    if (maxY < minY) {
+      return 0;
+    }
+
+    return (
+      maxY - minY + 1
+    );
+  }
+
+  function getRunInkCount(
+    canvas,
+    startX,
+    endX
+  ) {
+    const ctx =
+      canvas.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    const w =
+      canvas.width;
+
+    const h =
+      canvas.height;
+
+    const data =
+      ctx.getImageData(
+        0,
+        0,
+        w,
+        h
+      ).data;
+
+    let count = 0;
+
+    for (
+      let x = startX;
+      x <= endX;
+      x++
+    ) {
+      for (
+        let y = 0;
+        y < h;
+        y++
+      ) {
+        const index =
+          (y * w + x) * 4;
+
+        if (data[index] < 80) {
+          count++;
+        }
+      }
+    }
+
+    return count;
+  }
+
+  /*
+   * ==================================================
+   * 1文字を正方形に近い画像へ
+   * ==================================================
+   */
+
+  function makeCharacterCanvas(
+    source,
+    startX,
+    endX
+  ) {
+    const ctx =
+      source.getContext("2d", {
+        willReadFrequently: true,
+      });
+
+    const w =
+      source.width;
+
+    const h =
+      source.height;
+
+    const data =
+      ctx.getImageData(
+        0,
+        0,
+        w,
+        h
+      ).data;
+
+    let minY = h;
+    let maxY = -1;
+
+    for (
+      let x = startX;
+      x <= endX;
+      x++
+    ) {
+      for (
+        let y = 0;
+        y < h;
+        y++
+      ) {
+        const index =
+          (y * w + x) * 4;
+
+        if (data[index] < 80) {
+          minY =
+            Math.min(minY, y);
+
+          maxY =
+            Math.max(maxY, y);
+        }
+      }
+    }
+
+    if (maxY < minY) {
+      minY = 0;
+      maxY = h - 1;
+    }
+
+    const sourceWidth =
+      endX - startX + 1;
+
+    const sourceHeight =
+      maxY - minY + 1;
+
+    const targetSize = 140;
+
+    const canvas =
+      document.createElement("canvas");
+
+    canvas.width = targetSize;
+    canvas.height = targetSize;
+
+    const tctx =
+      canvas.getContext("2d");
+
+    tctx.fillStyle = "#fff";
+
+    tctx.fillRect(
+      0,
+      0,
+      targetSize,
+      targetSize
+    );
+
+    const usable = 90;
+
+    const scale =
+      Math.min(
+        usable / sourceWidth,
+        usable / sourceHeight
+      );
+
+    const dw =
+      sourceWidth * scale;
+
+    const dh =
+      sourceHeight * scale;
+
+    const dx =
+      (targetSize - dw) / 2;
+
+    const dy =
+      (targetSize - dh) / 2;
+
+    tctx.imageSmoothingEnabled = false;
+
+    tctx.drawImage(
+      source,
+      startX,
+      minY,
+      sourceWidth,
+      sourceHeight,
+      dx,
+      dy,
+      dw,
+      dh
     );
 
     return canvas;
@@ -733,124 +1037,14 @@ export default function App() {
   }
 
   /*
-   * --------------------------------------------------
-   * OCR文字列整理
-   *
-   * カンマは完全に無視
-   * --------------------------------------------------
+   * ==================================================
+   * 1文字OCR
+   * ==================================================
    */
 
-  function cleanDigits(text) {
-    const digits =
-      String(text || "")
-        .replace(/\D/g, "");
-
-    return digits;
-  }
-
-  /*
-   * --------------------------------------------------
-   * 候補評価
-   *
-   * 極端に長い数字列は即失格
-   * --------------------------------------------------
-   */
-
-  function scoreCandidate(
-    columnKey,
-    value
-  ) {
-    if (!value) {
-      return -9999;
-    }
-
-    const len = value.length;
-    const n = Number(value);
-
-    if (
-      !Number.isFinite(n)
-    ) {
-      return -9999;
-    }
-
-    let score = 0;
-
-    if (
-      columnKey ===
-      "patients"
-    ) {
-      /*
-       * 実患者
-       * 基本1〜2桁
-       */
-      if (len === 2) {
-        score += 200;
-      }
-
-      if (len === 1) {
-        score += 80;
-      }
-
-      if (len > 2) {
-        score -=
-          500 *
-          (len - 2);
-      }
-
-      if (
-        n >= 1 &&
-        n <= 99
-      ) {
-        score += 100;
-      }
-
-      if (n === 0) {
-        score += 30;
-      }
-    } else {
-      /*
-       * 保険・介護
-       * 主に4〜5桁
-       */
-      if (len === 5) {
-        score += 250;
-      }
-
-      if (len === 4) {
-        score += 200;
-      }
-
-      if (len === 3) {
-        score += 50;
-      }
-
-      if (len <= 2) {
-        score -= 250;
-      }
-
-      if (len > 5) {
-        score -=
-          700 *
-          (len - 5);
-      }
-
-      if (
-        n >= 1000 &&
-        n <= 99999
-      ) {
-        score += 120;
-      }
-    }
-
-    return score;
-  }
-
-  async function runOCR(
+  async function recognizeSingleDigit(
     worker,
-    canvas,
-    psm,
-    columnKey,
-    variant
+    canvas
   ) {
     const blob =
       await canvasToBlob(canvas);
@@ -860,48 +1054,36 @@ export default function App() {
         "0123456789",
 
       /*
-       * 数字列のみ
+       * 10 = single character
        */
       tessedit_pageseg_mode:
-        String(psm),
-
-      preserve_interword_spaces:
-        "0",
+        "10",
 
       user_defined_dpi:
         "300",
     });
 
     const result =
-      await worker.recognize(
-        blob
-      );
+      await worker.recognize(blob);
 
-    const raw =
+    const text =
       String(
         result.data.text || ""
-      );
+      )
+        .replace(/\D/g, "");
 
-    const value =
-      cleanDigits(raw);
-
-    return {
-      raw,
-      value,
-      variant,
-      psm,
-      score:
-        scoreCandidate(
-          columnKey,
-          value
-        ),
-    };
+    /*
+     * 1文字だけ採用
+     */
+    return text
+      ? text[0]
+      : "";
   }
 
   /*
-   * --------------------------------------------------
-   * 1セル認識
-   * --------------------------------------------------
+   * ==================================================
+   * セル全体処理
+   * ==================================================
    */
 
   async function recognizeCell(
@@ -921,109 +1103,92 @@ export default function App() {
       reduceMoire(raw);
 
     const gray =
-      makeGray(reduced);
-
-    const blurred =
-      blurCanvas(gray);
+      grayscale(reduced);
 
     const binary =
-      makeBinary(blurred);
+      makeBinary(gray);
 
-    const cleanBinary =
-      removeVerticalLines(
-        binary
+    const noLines =
+      removeVerticalRules(binary);
+
+    const centered =
+      cropVerticalCenter(noLines);
+
+    const segmented =
+      segmentCharacters(
+        centered,
+        COLUMNS[columnKey]
+          .maxDigits
       );
 
-    const paddedGray =
-      addPadding(gray);
-
-    const paddedBlur =
-      addPadding(blurred);
-
-    const paddedBinary =
-      addPadding(cleanBinary);
-
-    const variants = [
-      {
-        name: "gray",
-        canvas: paddedGray,
-      },
-      {
-        name: "blur",
-        canvas: paddedBlur,
-      },
-      {
-        name: "binary",
-        canvas: paddedBinary,
-      },
-    ];
-
-    /*
-     * PSM6は長いゴミ列を出しやすかったので除外
-     */
-    const psms = [
-      7,
-      8,
-      13,
-    ];
-
-    const candidates = [];
+    const digits = [];
 
     for (
-      const variant of variants
+      const charCanvas of
+      segmented.characters
     ) {
-      for (
-        const psm of psms
-      ) {
-        const result =
-          await runOCR(
-            worker,
-            variant.canvas,
-            psm,
-            columnKey,
-            variant.name
-          );
-
-        candidates.push(
-          result
+      const digit =
+        await recognizeSingleDigit(
+          worker,
+          charCanvas
         );
+
+      if (digit) {
+        digits.push(digit);
       }
     }
 
-    candidates.sort(
-      (a, b) =>
-        b.score - a.score
-    );
+    let value =
+      digits.join("");
 
-    const best =
-      candidates[0];
+    /*
+     * 最終的な桁数制限
+     */
+    if (
+      columnKey === "patients" &&
+      value.length > 2
+    ) {
+      value =
+        value.slice(-2);
+    }
 
-    const bestCanvas =
-      variants.find(
-        (item) =>
-          item.name ===
-          best.variant
-      )?.canvas;
+    if (
+      columnKey !== "patients" &&
+      value.length > 5
+    ) {
+      value =
+        value.slice(-5);
+    }
 
     return {
-      ...best,
+      value,
 
       preview:
-        bestCanvas
-          ? bestCanvas.toDataURL(
+        centered.toDataURL(
+          "image/png"
+        ),
+
+      chars:
+        segmented.characters.map(
+          (canvas) =>
+            canvas.toDataURL(
               "image/png"
             )
-          : "",
+        ),
 
-      candidates,
+      recognizedChars:
+        digits,
     };
   }
 
+  /*
+   * ==================================================
+   * 全体解析
+   * ==================================================
+   */
+
   async function analyzeImage() {
-    if (
-      !file ||
-      isAnalyzing
-    ) {
+    if (!file || isAnalyzing) {
       return;
     }
 
@@ -1047,7 +1212,7 @@ export default function App() {
         await loadImage(file);
 
       setStatusText(
-        "数字認識エンジンを準備しています…"
+        "1文字OCRを準備しています…"
       );
 
       worker =
@@ -1059,14 +1224,12 @@ export default function App() {
       const output = [];
 
       const total =
-        TEST_DAYS.length *
-        3;
+        TEST_DAYS.length * 3;
 
       let completed = 0;
 
       for (
-        const day of
-        TEST_DAYS
+        const day of TEST_DAYS
       ) {
         const row = {
           day,
@@ -1081,7 +1244,7 @@ export default function App() {
           ]
         ) {
           setStatusText(
-            `${day}日：${COLUMNS[columnKey].label}を解析中…`
+            `${day}日：${COLUMNS[columnKey].label}を1文字ずつ解析中…`
           );
 
           const result =
@@ -1093,38 +1256,30 @@ export default function App() {
             );
 
           row.cells.push({
-            key:
-              columnKey,
+            key: columnKey,
 
             label:
-              COLUMNS[
-                columnKey
-              ].label,
+              COLUMNS[columnKey]
+                .label,
 
             value:
               result.value,
 
-            raw:
-              result.raw,
-
             preview:
               result.preview,
 
-            variant:
-              result.variant,
+            chars:
+              result.chars,
 
-            psm:
-              result.psm,
+            recognizedChars:
+              result.recognizedChars,
           });
 
           completed++;
 
           setProgress(
             Math.round(
-              (
-                completed /
-                total
-              ) *
+              (completed / total) *
                 100
             )
           );
@@ -1140,8 +1295,7 @@ export default function App() {
 
       setElapsed(
         (
-          (finished -
-            started) /
+          (finished - started) /
           1000
         ).toFixed(1)
       );
@@ -1168,33 +1322,23 @@ export default function App() {
     }
   }
 
-  function formatNumber(
+  function formatValue(
     value,
-    columnKey
+    key
   ) {
     if (!value) {
       return "（空）";
     }
 
-    if (
-      columnKey ===
-      "patients"
-    ) {
+    if (key === "patients") {
       return value;
     }
 
-    const n =
-      Number(value);
+    const n = Number(value);
 
-    if (
-      !Number.isFinite(n)
-    ) {
-      return value;
-    }
-
-    return n.toLocaleString(
-      "ja-JP"
-    );
+    return Number.isFinite(n)
+      ? n.toLocaleString("ja-JP")
+      : value;
   }
 
   return (
@@ -1218,8 +1362,7 @@ export default function App() {
         </header>
 
         <div className="privacy">
-          🔒
-          画像・診療データは
+          🔒 画像・診療データは
           サーバーに保存されません
         </div>
 
@@ -1234,8 +1377,7 @@ export default function App() {
           </h2>
 
           <p className="description">
-            7・14・21・28日の
-            数字認識を確認します。
+            今回は数字を1文字ずつ分離して認識します。
           </p>
 
           <input
@@ -1243,16 +1385,12 @@ export default function App() {
             className="hidden-input"
             type="file"
             accept="image/*"
-            onChange={
-              handleFile
-            }
+            onChange={handleFile}
           />
 
           <button
             className="select-button"
-            disabled={
-              isAnalyzing
-            }
+            disabled={isAnalyzing}
             onClick={() =>
               inputRef.current?.click()
             }
@@ -1275,12 +1413,12 @@ export default function App() {
           </span>
 
           <h2>
-            数字専用OCR
+            1文字分離OCR
           </h2>
 
           <p className="description">
-            カンマを無視し、
-            数字だけを認識します。
+            カンマや罫線を除外し、
+            数字を1文字ずつ認識して結合します。
           </p>
 
           <button
@@ -1293,9 +1431,7 @@ export default function App() {
               !file ||
               isAnalyzing
             }
-            onClick={
-              analyzeImage
-            }
+            onClick={analyzeImage}
           >
             {isAnalyzing
               ? "解析中…"
@@ -1345,8 +1481,12 @@ export default function App() {
             </span>
 
             <h2>
-              数字認識結果
+              1文字OCR結果
             </h2>
+
+            <p className="description">
+              下段に、分離された文字も表示します。
+            </p>
 
             {results.map(
               (row) => (
@@ -1354,7 +1494,7 @@ export default function App() {
                   key={row.day}
                   style={{
                     marginBottom:
-                      "34px",
+                      "42px",
                   }}
                 >
 
@@ -1377,20 +1517,16 @@ export default function App() {
                       gridTemplateColumns:
                         "repeat(3, minmax(0, 1fr))",
 
-                      gap:
-                        "8px",
+                      gap: "8px",
                     }}
                   >
 
                     {row.cells.map(
                       (cell) => (
                         <div
-                          key={
-                            cell.key
-                          }
+                          key={cell.key}
                           style={{
-                            minWidth:
-                              0,
+                            minWidth: 0,
                           }}
                         >
 
@@ -1398,10 +1534,13 @@ export default function App() {
                             style={{
                               textAlign:
                                 "center",
+
                               fontSize:
                                 "11px",
+
                               fontWeight:
                                 700,
+
                               marginBottom:
                                 "5px",
                             }}
@@ -1412,35 +1551,43 @@ export default function App() {
                           <div
                             style={{
                               height:
-                                "105px",
+                                "85px",
+
                               border:
                                 "1px solid #cbd5e1",
+
                               borderRadius:
                                 "10px",
+
                               background:
                                 "#fff",
+
                               display:
                                 "flex",
+
                               alignItems:
                                 "center",
+
                               justifyContent:
                                 "center",
+
                               overflow:
                                 "hidden",
+
                               padding:
                                 "4px",
                             }}
                           >
                             <img
-                              src={
-                                cell.preview
-                              }
+                              src={cell.preview}
                               alt=""
                               style={{
                                 width:
                                   "100%",
+
                                 maxHeight:
-                                  "95px",
+                                  "75px",
+
                                 objectFit:
                                   "contain",
                               }}
@@ -1451,49 +1598,109 @@ export default function App() {
                             style={{
                               marginTop:
                                 "7px",
+
                               padding:
                                 "8px 3px",
+
                               textAlign:
                                 "center",
+
                               background:
                                 "#f8fafc",
+
                               borderRadius:
                                 "8px",
-                              minHeight:
-                                "72px",
                             }}
                           >
-
                             <strong
                               style={{
                                 fontSize:
-                                  "18px",
+                                  "20px",
                               }}
                             >
-                              {formatNumber(
+                              {formatValue(
                                 cell.value,
                                 cell.key
                               )}
                             </strong>
+                          </div>
 
-                            <br />
+                          <div
+                            style={{
+                              marginTop:
+                                "8px",
 
-                            <span
-                              style={{
-                                fontSize:
-                                  "9px",
-                                color:
-                                  "#64748b",
-                              }}
-                            >
-                              {
-                                cell.variant
-                              }
-                              {" / "}
-                              PSM
-                              {cell.psm}
-                            </span>
+                              display:
+                                "flex",
 
+                              gap:
+                                "3px",
+
+                              justifyContent:
+                                "center",
+
+                              flexWrap:
+                                "wrap",
+                            }}
+                          >
+                            {cell.chars.map(
+                              (
+                                src,
+                                index
+                              ) => (
+                                <div
+                                  key={
+                                    index
+                                  }
+                                  style={{
+                                    width:
+                                      "30px",
+
+                                    textAlign:
+                                      "center",
+                                  }}
+                                >
+                                  <img
+                                    src={
+                                      src
+                                    }
+                                    alt=""
+                                    style={{
+                                      width:
+                                        "28px",
+
+                                      height:
+                                        "28px",
+
+                                      objectFit:
+                                        "contain",
+
+                                      border:
+                                        "1px solid #ddd",
+
+                                      background:
+                                        "#fff",
+                                    }}
+                                  />
+
+                                  <div
+                                    style={{
+                                      fontSize:
+                                        "11px",
+
+                                      fontWeight:
+                                        700,
+                                    }}
+                                  >
+                                    {cell
+                                      .recognizedChars[
+                                      index
+                                    ] ||
+                                      "?"}
+                                  </div>
+                                </div>
+                              )
+                            )}
                           </div>
 
                         </div>
@@ -1510,7 +1717,7 @@ export default function App() {
         )}
 
         <footer>
-          数字専用OCRテスト
+          1文字分離OCRテスト
         </footer>
 
       </section>
