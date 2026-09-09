@@ -83,27 +83,27 @@ export default function App() {
     setPreviews([]);
 const crops = [
   {
-  key: "patients",
-  label: "実患者",
-  x: 0.414,
-  y: 0.035,
-  w: 0.050,
-  h: 0.755,
-},
+    key: "patients",
+    label: "実患者",
+    x: 0.438,
+    y: 0.035,
+    w: 0.030,
+    h: 0.755,
+  },
   {
     key: "insurance",
     label: "保険診療分（点数）",
-    x: 0.515,
+    x: 0.495,
     y: 0.035,
-    w: 0.070,
+    w: 0.055,
     h: 0.755,
   },
   {
     key: "care",
     label: "その他保険診療分（介護保険・点数）",
-    x: 0.755,
+    x: 0.735,
     y: 0.035,
-    w: 0.070,
+    w: 0.060,
     h: 0.755,
   },
 ];
