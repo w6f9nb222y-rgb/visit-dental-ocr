@@ -10,7 +10,7 @@ export default function App() {
 
   /*
    * ==========================================
-   * 大宮画像で合わせた基準
+   * 大宮画像で確定した位置
    * ==========================================
    */
 
@@ -21,27 +21,6 @@ export default function App() {
     x: 0.520,
     w: 0.090,
   };
-
-  function loadImage(file) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      const url = URL.createObjectURL(file);
-
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        resolve(img);
-      };
-
-      img.onerror = () => {
-        URL.revokeObjectURL(url);
-        reject(
-          new Error("画像を読み込めませんでした")
-        );
-      };
-
-      img.src = url;
-    });
-  }
 
   async function handleFile(event) {
     const selected =
@@ -63,6 +42,35 @@ export default function App() {
         "画像を読み込めませんでした"
       );
     }
+  }
+
+  function loadImage(file) {
+    return new Promise(
+      (resolve, reject) => {
+        const img = new Image();
+
+        const url =
+          URL.createObjectURL(file);
+
+        img.onload = () => {
+          URL.revokeObjectURL(url);
+
+          resolve(img);
+        };
+
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+
+          reject(
+            new Error(
+              "画像読込エラー"
+            )
+          );
+        };
+
+        img.src = url;
+      }
+    );
   }
 
   /*
@@ -87,11 +95,17 @@ export default function App() {
 
   /*
    * ==========================================
-   * 保険診療分セルを切り抜く
+   * セル切り抜き
+   *
+   * 前回より上下を狭くして
+   * 横罫線の影響を減らす
    * ==========================================
    */
 
-  function makeCell(image, day) {
+  function makeCell(
+    image,
+    day
+  ) {
     const rowStep =
       (
         ROW_31_CENTER -
@@ -102,10 +116,19 @@ export default function App() {
       image.height *
       getRowCenter(day);
 
+    /*
+     * 31日は下罫線が近いので
+     * 少しだけさらに狭くする
+     */
+    const heightRatio =
+      day === 31
+        ? 0.42
+        : 0.56;
+
     const sourceHeight =
       image.height *
       rowStep *
-      0.72;
+      heightRatio;
 
     const sourceY =
       centerY -
@@ -126,7 +149,7 @@ export default function App() {
 
     canvas.width =
       Math.max(
-        100,
+        120,
         Math.round(
           sourceWidth
         )
@@ -134,7 +157,7 @@ export default function App() {
 
     canvas.height =
       Math.max(
-        30,
+        28,
         Math.round(
           sourceHeight
         )
@@ -166,10 +189,12 @@ export default function App() {
 
     ctx.drawImage(
       image,
+
       sourceX,
       sourceY,
       sourceWidth,
       sourceHeight,
+
       0,
       0,
       canvas.width,
@@ -181,11 +206,79 @@ export default function App() {
 
   /*
    * ==========================================
-   * グレースケール
+   * 強いモアレ平均化
+   *
+   * 一度かなり小さくして
+   * 液晶の細かい格子を平均化
    * ==========================================
    */
 
-  function getGrayData(canvas) {
+  function makeSmoothed(
+    source
+  ) {
+    const small =
+      document.createElement(
+        "canvas"
+      );
+
+    /*
+     * 元の縦横比を保ちつつ
+     * かなり縮小
+     */
+    small.width = 150;
+    small.height = 34;
+
+    const ctx =
+      small.getContext(
+        "2d",
+        {
+          willReadFrequently:
+            true,
+        }
+      );
+
+    ctx.fillStyle = "#fff";
+
+    ctx.fillRect(
+      0,
+      0,
+      small.width,
+      small.height
+    );
+
+    ctx.imageSmoothingEnabled =
+      true;
+
+    ctx.imageSmoothingQuality =
+      "high";
+
+    /*
+     * 軽いぼかしをかけながら縮小
+     */
+    ctx.filter = "blur(1.6px)";
+
+    ctx.drawImage(
+      source,
+      0,
+      0,
+      small.width,
+      small.height
+    );
+
+    ctx.filter = "none";
+
+    return small;
+  }
+
+  /*
+   * ==========================================
+   * グレースケールデータ
+   * ==========================================
+   */
+
+  function getGray(
+    canvas
+  ) {
     const ctx =
       canvas.getContext(
         "2d",
@@ -203,28 +296,26 @@ export default function App() {
         canvas.height
       );
 
+    const src =
+      imageData.data;
+
     const gray =
-      new Uint8Array(
+      new Float32Array(
         canvas.width *
         canvas.height
       );
-
-    const data =
-      imageData.data;
 
     let p = 0;
 
     for (
       let i = 0;
-      i < data.length;
+      i < src.length;
       i += 4
     ) {
       gray[p++] =
-        Math.round(
-          data[i] * 0.299 +
-          data[i + 1] * 0.587 +
-          data[i + 2] * 0.114
-        );
+        src[i] * 0.299 +
+        src[i + 1] * 0.587 +
+        src[i + 2] * 0.114;
     }
 
     return gray;
@@ -232,50 +323,88 @@ export default function App() {
 
   /*
    * ==========================================
-   * 診療日スコア
+   * 文字らしさを判定
    *
    * ポイント：
    *
-   * ・右側25%は縦罫線＋0があるので
-   *   判定から大きく除外
-   *
-   * ・左側に黒い文字が広がっているほど
-   *   診療日らしい
-   *
-   * ・モアレ対策として
-   *   1画素単位ではなく列単位で見る
+   * ・右端の「0」は見ない
+   * ・左側に存在する太い低周波成分だけ見る
+   * ・細かいモアレは縮小＋ぼかしで消す
    * ==========================================
    */
 
-  function getTreatmentScore(canvas) {
-    const w = canvas.width;
-    const h = canvas.height;
+  function getTextScore(
+    source
+  ) {
+    const smoothed =
+      makeSmoothed(source);
+
+    const w =
+      smoothed.width;
+
+    const h =
+      smoothed.height;
 
     const gray =
-      getGrayData(canvas);
+      getGray(smoothed);
 
     /*
-     * 上下の罫線・ノイズを除外
-     */
-    const yStart =
-      Math.floor(h * 0.18);
-
-    const yEnd =
-      Math.ceil(h * 0.82);
-
-    /*
-     * 右側は
-     * 0と縦罫線があるので除外
+     * 数字が広がる左側のみを見る
      *
-     * 左～65%だけを見る
+     * 右側約30%は
+     * 「0」と縦罫線があるので除外
      */
     const xStart =
-      Math.floor(w * 0.05);
+      Math.floor(w * 0.08);
 
     const xEnd =
-      Math.floor(w * 0.66);
+      Math.floor(w * 0.68);
 
-    const columnScores = [];
+    const yStart =
+      Math.floor(h * 0.15);
+
+    const yEnd =
+      Math.floor(h * 0.85);
+
+    /*
+     * まず領域全体の平均輝度
+     */
+    let sum = 0;
+    let count = 0;
+
+    for (
+      let y = yStart;
+      y < yEnd;
+      y++
+    ) {
+      for (
+        let x = xStart;
+        x < xEnd;
+        x++
+      ) {
+        sum +=
+          gray[
+            y * w + x
+          ];
+
+        count++;
+      }
+    }
+
+    const mean =
+      count
+        ? sum / count
+        : 255;
+
+    /*
+     * 平均より一定以上暗い部分を
+     * 「文字候補」とする
+     */
+    const darkThreshold =
+      mean - 16;
+
+    const columnInk =
+      [];
 
     for (
       let x = xStart;
@@ -283,151 +412,215 @@ export default function App() {
       x++
     ) {
       let dark = 0;
-      let count = 0;
 
       for (
         let y = yStart;
         y < yEnd;
         y++
       ) {
-        const value =
+        if (
           gray[
             y * w + x
-          ];
-
-        count++;
-
-        /*
-         * モアレより濃い部分だけ
-         */
-        if (value < 95) {
+          ] <
+          darkThreshold
+        ) {
           dark++;
         }
       }
 
-      columnScores.push(
-        count
-          ? dark / count
-          : 0
+      columnInk.push(
+        dark /
+        Math.max(
+          1,
+          yEnd - yStart
+        )
       );
     }
 
     /*
-     * 1本の列だけ黒いものは
-     * モアレの可能性が高いので、
-     * 隣接列も含めて判定
+     * 文字は複数列にまたがるので
+     * 横方向に再度平均化
      */
-    const active =
-      columnScores.map(
-        (score, index) => {
-          const left =
-            columnScores[
-              index - 1
-            ] || 0;
+    const averaged =
+      columnInk.map(
+        (_, index) => {
+          let total = 0;
+          let n = 0;
 
-          const right =
-            columnScores[
-              index + 1
-            ] || 0;
+          for (
+            let dx = -2;
+            dx <= 2;
+            dx++
+          ) {
+            const value =
+              columnInk[
+                index + dx
+              ];
 
-          const average =
-            (
-              left +
-              score +
-              right
-            ) / 3;
+            if (
+              value !==
+              undefined
+            ) {
+              total += value;
+              n++;
+            }
+          }
 
-          return (
-            average >
-            0.12
-          );
+          return n
+            ? total / n
+            : 0;
         }
       );
 
     /*
-     * 活性列の総数
+     * 十分に太い領域だけ
      */
-    const activeCount =
-      active.filter(Boolean)
-        .length;
+    const active =
+      averaged.map(
+        (value) =>
+          value > 0.18
+      );
 
     /*
-     * 活性列がどこまで広がっているか
+     * 連続した活性領域を抽出
      */
-    let first = -1;
-    let last = -1;
+    const runs = [];
+
+    let start = null;
 
     for (
       let i = 0;
-      i < active.length;
+      i <= active.length;
       i++
     ) {
-      if (active[i]) {
-        if (first < 0) {
-          first = i;
-        }
+      const on =
+        i < active.length
+          ? active[i]
+          : false;
 
-        last = i;
+      if (
+        on &&
+        start === null
+      ) {
+        start = i;
+      }
+
+      if (
+        !on &&
+        start !== null
+      ) {
+        runs.push({
+          start,
+          end: i - 1,
+          width:
+            i - start,
+        });
+
+        start = null;
       }
     }
 
+    /*
+     * かなり細いものは
+     * モアレとして除外
+     */
+    const strongRuns =
+      runs.filter(
+        (run) =>
+          run.width >= 3
+      );
+
+    const strongWidth =
+      strongRuns.reduce(
+        (sum, run) =>
+          sum +
+          run.width,
+        0
+      );
+
+    /*
+     * 一番左に数字がどこまであるか
+     */
+    const firstRun =
+      strongRuns[0];
+
+    const lastRun =
+      strongRuns[
+        strongRuns.length -
+          1
+      ];
+
     const span =
-      first >= 0
+      firstRun &&
+      lastRun
         ? (
-            last -
-            first +
+            lastRun.end -
+            firstRun.start +
             1
           ) /
           active.length
         : 0;
 
-    const density =
-      active.length
-        ? activeCount /
-          active.length
-        : 0;
+    const widthRatio =
+      strongWidth /
+      Math.max(
+        1,
+        active.length
+      );
 
     /*
-     * 横幅を重視
+     * 数字の塊が複数あるほど
+     * 診療日らしい
      */
+    const componentScore =
+      Math.min(
+        strongRuns.length /
+          4,
+        1
+      );
+
     const score =
-      span * 0.70 +
-      density * 0.30;
+      span * 0.45 +
+      widthRatio * 0.35 +
+      componentScore * 0.20;
 
     return {
       score,
       span,
-      density,
+      widthRatio,
+      components:
+        strongRuns.length,
+      smoothed,
     };
   }
 
   /*
    * ==========================================
-   * プレビュー
+   * 確認用プレビュー
    * ==========================================
    */
 
-  function makePreview(canvas) {
-    const preview =
+  function makePreview(
+    source
+  ) {
+    const canvas =
       document.createElement(
         "canvas"
       );
 
-    preview.width = 420;
-    preview.height = 90;
+    canvas.width = 420;
+    canvas.height = 90;
 
     const ctx =
-      preview.getContext(
-        "2d"
-      );
+      canvas.getContext("2d");
 
     ctx.fillStyle = "#fff";
 
     ctx.fillRect(
       0,
       0,
-      preview.width,
-      preview.height
+      canvas.width,
+      canvas.height
     );
 
     ctx.imageSmoothingEnabled =
@@ -437,14 +630,14 @@ export default function App() {
       "high";
 
     ctx.drawImage(
-      canvas,
+      source,
       0,
       0,
-      preview.width,
-      preview.height
+      canvas.width,
+      canvas.height
     );
 
-    return preview.toDataURL(
+    return canvas.toDataURL(
       "image/jpeg",
       0.92
     );
@@ -452,7 +645,7 @@ export default function App() {
 
   /*
    * ==========================================
-   * 31日分を解析
+   * 31日解析
    * ==========================================
    */
 
@@ -466,43 +659,48 @@ export default function App() {
       day <= 31;
       day++
     ) {
-      const cell =
+      const raw =
         makeCell(
           image,
           day
         );
 
-      const detection =
-        getTreatmentScore(
-          cell
-        );
+      const result =
+        getTextScore(raw);
 
       output.push({
         day,
+
         score:
-          detection.score,
+          result.score,
 
         span:
-          detection.span,
+          result.span,
 
-        density:
-          detection.density,
+        widthRatio:
+          result.widthRatio,
+
+        components:
+          result.components,
 
         preview:
-          makePreview(cell),
+          makePreview(raw),
+
+        smoothedPreview:
+          makePreview(
+            result.smoothed
+          ),
       });
     }
 
     /*
-     * ========================================
-     * 自動しきい値
-     *
-     * 非診療日が多数ある前提で
-     * 下位側の中央値を基準にする
-     * ========================================
+     * ======================================
+     * 非診療日多数を前提に
+     * スコア分布から自動しきい値
+     * ======================================
      */
 
-    const sorted =
+    const scores =
       output
         .map(
           (row) =>
@@ -514,19 +712,46 @@ export default function App() {
         );
 
     const median =
-      sorted[
+      scores[
         Math.floor(
-          sorted.length / 2
+          scores.length /
+            2
+        )
+      ];
+
+    const deviations =
+      scores
+        .map(
+          (value) =>
+            Math.abs(
+              value -
+              median
+            )
+        )
+        .sort(
+          (a, b) =>
+            a - b
+        );
+
+    const mad =
+      deviations[
+        Math.floor(
+          deviations.length /
+            2
         )
       ];
 
     /*
-     * まずは診断目的で少し厳しめ
+     * 今回は少し緩め
+     *
+     * 見逃すより、
+     * 余計な日を少し選ぶ方を優先
      */
     const threshold =
+      median +
       Math.max(
-        median + 0.10,
-        0.22
+        mad * 1.8,
+        0.035
       );
 
     const finalRows =
@@ -536,12 +761,24 @@ export default function App() {
 
           selected:
             row.score >
-            threshold,
+              threshold &&
+            row.day !== 31
+              ? true
+              : row.day === 31 &&
+                row.score >
+                  threshold +
+                    0.08,
         })
       );
 
     setRows(finalRows);
   }
+
+  /*
+   * ==========================================
+   * 手動ON/OFF
+   * ==========================================
+   */
 
   function toggleDay(day) {
     setRows(
@@ -551,6 +788,7 @@ export default function App() {
             row.day === day
               ? {
                   ...row,
+
                   selected:
                     !row.selected,
                 }
@@ -649,9 +887,8 @@ export default function App() {
             </h2>
 
             <p className="description">
-              保険診療分の数字が
-              左方向へどれだけ広がっているかを使って
-              診療日を判定します。
+              液晶モアレを強く平均化してから、
+              数字の太い形だけを探します。
             </p>
 
             <button
@@ -682,14 +919,14 @@ export default function App() {
                 padding:
                   "12px",
 
-                marginBottom:
-                  "18px",
+                background:
+                  "#eef6ff",
 
                 borderRadius:
                   "10px",
 
-                background:
-                  "#eef6ff",
+                marginBottom:
+                  "18px",
 
                 fontWeight:
                   700,
@@ -708,27 +945,20 @@ export default function App() {
             {rows.map(
               (row) => (
                 <div
-                  key={row.day}
+                  key={
+                    row.day
+                  }
                   onClick={() =>
                     toggleDay(
                       row.day
                     )
                   }
                   style={{
-                    display:
-                      "flex",
-
-                    alignItems:
-                      "center",
-
-                    gap:
+                    marginBottom:
                       "10px",
 
                     padding:
-                      "7px",
-
-                    marginBottom:
-                      "7px",
+                      "8px",
 
                     border:
                       row.selected
@@ -741,39 +971,110 @@ export default function App() {
                         : "#fff",
 
                     borderRadius:
-                      "9px",
-
-                    cursor:
-                      "pointer",
+                      "10px",
                   }}
                 >
 
                   <div
                     style={{
-                      width:
-                        "42px",
+                      display:
+                        "flex",
 
-                      flexShrink:
-                        0,
-
-                      textAlign:
+                      alignItems:
                         "center",
+
+                      gap:
+                        "10px",
                     }}
                   >
                     <div
                       style={{
-                        fontWeight:
-                          700,
+                        width:
+                          "46px",
 
-                        fontSize:
-                          "18px",
+                        flexShrink:
+                          0,
+
+                        textAlign:
+                          "center",
                       }}
                     >
-                      {row.day}
+                      <div
+                        style={{
+                          fontSize:
+                            "19px",
+
+                          fontWeight:
+                            700,
+                        }}
+                      >
+                        {
+                          row.day
+                        }
+                      </div>
+
+                      <div
+                        style={{
+                          fontSize:
+                            "9px",
+
+                          color:
+                            "#64748b",
+                        }}
+                      >
+                        {row.score.toFixed(
+                          3
+                        )}
+                      </div>
                     </div>
 
+                    <img
+                      src={
+                        row.preview
+                      }
+                      alt=""
+                      style={{
+                        width:
+                          "calc(100% - 56px)",
+
+                        height:
+                          "52px",
+
+                        objectFit:
+                          "contain",
+
+                        background:
+                          "#fff",
+                      }}
+                    />
+                  </div>
+
+                  <div
+                    style={{
+                      marginTop:
+                        "6px",
+
+                      paddingTop:
+                        "6px",
+
+                      borderTop:
+                        "1px dashed #cbd5e1",
+
+                      display:
+                        "flex",
+
+                      alignItems:
+                        "center",
+
+                      gap:
+                        "8px",
+                    }}
+                  >
                     <div
                       style={{
+                        width:
+                          "46px",
+
                         fontSize:
                           "9px",
 
@@ -781,31 +1082,60 @@ export default function App() {
                           "#64748b",
                       }}
                     >
-                      {row.score.toFixed(
-                        3
-                      )}
+                      平均化
                     </div>
+
+                    <img
+                      src={
+                        row.smoothedPreview
+                      }
+                      alt=""
+                      style={{
+                        width:
+                          "calc(100% - 56px)",
+
+                        height:
+                          "38px",
+
+                        objectFit:
+                          "contain",
+
+                        background:
+                          "#fff",
+                      }}
+                    />
                   </div>
 
-                  <img
-                    src={
-                      row.preview
-                    }
-                    alt=""
+                  <div
                     style={{
-                      width:
-                        "calc(100% - 52px)",
+                      fontSize:
+                        "9px",
 
-                      height:
-                        "54px",
+                      color:
+                        "#64748b",
 
-                      objectFit:
-                        "contain",
+                      marginTop:
+                        "5px",
 
-                      background:
-                        "#fff",
+                      textAlign:
+                        "right",
                     }}
-                  />
+                  >
+                    span{" "}
+                    {row.span.toFixed(
+                      2
+                    )}
+                    {" / "}
+                    width{" "}
+                    {row.widthRatio.toFixed(
+                      2
+                    )}
+                    {" / "}
+                    blocks{" "}
+                    {
+                      row.components
+                    }
+                  </div>
 
                 </div>
               )
@@ -815,7 +1145,7 @@ export default function App() {
         )}
 
         <footer>
-          診療日検出テスト
+          モアレ平均化・診療日検出
         </footer>
 
       </section>
