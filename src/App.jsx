@@ -1,45 +1,128 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { createWorker } from "tesseract.js";
+import * as XLSX from "xlsx";
 
 export default function App() {
-  const [file, setFile] = useState(null);
-  const [image, setImage] = useState(null);
-  const [rows, setRows] = useState([]);
-  const [error, setError] = useState("");
+  const [files, setFiles] = useState([]);
+  const [images, setImages] = useState([]);
+
+  /*
+   * 画像ごとの選択日
+   *
+   * {
+   *   0: [7,12,14,...],
+   *   1: [6,10,11,...]
+   * }
+   */
+  const [selectedDays, setSelectedDays] =
+    useState({});
+
+  const [results, setResults] =
+    useState([]);
+
+  const [isAnalyzing, setIsAnalyzing] =
+    useState(false);
+
+  const [statusText, setStatusText] =
+    useState("");
+
+  const [progress, setProgress] =
+    useState(0);
+
+  const [elapsed, setElapsed] =
+    useState(null);
+
+  const [error, setError] =
+    useState("");
 
   const inputRef = useRef(null);
 
   /*
    * ==========================================
-   * 大宮画像で確定した位置
+   * 現在の帳票位置
+   *
+   * 大宮画像で調整済み
    * ==========================================
    */
 
   const ROW_1_CENTER = 0.0545;
   const ROW_31_CENTER = 0.8380;
 
-  const INSURANCE = {
-    x: 0.520,
-    w: 0.090,
+  const COLUMNS = {
+    patients: {
+      label: "実患者",
+      x: 0.4820,
+      w: 0.0300,
+      maxDigits: 2,
+    },
+
+    insurance: {
+      label: "保険診療分",
+      x: 0.5280,
+      w: 0.0700,
+      maxDigits: 5,
+    },
+
+    care: {
+      label: "介護保険",
+      x: 0.7970,
+      w: 0.0600,
+      maxDigits: 5,
+    },
   };
 
-  async function handleFile(event) {
+  /*
+   * ==========================================
+   * 画像選択
+   * ==========================================
+   */
+
+  async function handleFiles(event) {
     const selected =
-      event.target.files?.[0];
+      Array.from(
+        event.target.files || []
+      );
 
-    if (!selected) return;
+    if (!selected.length) {
+      return;
+    }
 
-    setFile(selected);
-    setRows([]);
+    setFiles(selected);
+    setResults([]);
+    setSelectedDays({});
     setError("");
+    setProgress(0);
+    setElapsed(null);
+    setStatusText("");
 
     try {
-      const loaded =
-        await loadImage(selected);
+      const loaded = [];
 
-      setImage(loaded);
+      for (const file of selected) {
+        loaded.push(
+          await loadImage(file)
+        );
+      }
+
+      setImages(loaded);
+
+      /*
+       * 各画像の初期選択日は空
+       */
+      const initial = {};
+
+      selected.forEach(
+        (_, index) => {
+          initial[index] = [];
+        }
+      );
+
+      setSelectedDays(initial);
     } catch (e) {
+      console.error(e);
+
       setError(
-        "画像を読み込めませんでした"
+        "画像の読み込みに失敗しました"
       );
     }
   }
@@ -47,35 +130,96 @@ export default function App() {
   function loadImage(file) {
     return new Promise(
       (resolve, reject) => {
-        const img = new Image();
+        const image =
+          new Image();
 
         const url =
           URL.createObjectURL(file);
 
-        img.onload = () => {
+        image.onload = () => {
           URL.revokeObjectURL(url);
-
-          resolve(img);
+          resolve(image);
         };
 
-        img.onerror = () => {
+        image.onerror = () => {
           URL.revokeObjectURL(url);
 
           reject(
             new Error(
-              "画像読込エラー"
+              "画像を読み込めませんでした"
             )
           );
         };
 
-        img.src = url;
+        image.src = url;
       }
     );
   }
 
   /*
    * ==========================================
-   * 日付ごとの中心
+   * 日付選択
+   * ==========================================
+   */
+
+  function toggleDay(
+    fileIndex,
+    day
+  ) {
+    setSelectedDays(
+      (current) => {
+        const days =
+          current[fileIndex] || [];
+
+        const exists =
+          days.includes(day);
+
+        const nextDays =
+          exists
+            ? days.filter(
+                (d) => d !== day
+              )
+            : [
+                ...days,
+                day,
+              ].sort(
+                (a, b) =>
+                  a - b
+              );
+
+        return {
+          ...current,
+
+          [fileIndex]:
+            nextDays,
+        };
+      }
+    );
+  }
+
+  function clearDays(
+    fileIndex
+  ) {
+    setSelectedDays(
+      (current) => ({
+        ...current,
+
+        [fileIndex]: [],
+      })
+    );
+  }
+
+  /*
+   * 曜日指定の補助ボタン
+   *
+   * 年月判定前なので、
+   * 今は単純な日付ボタンだけを使う。
+   * 後で曜日自動選択を追加できる。
+   */
+
+  /*
+   * ==========================================
+   * 行中心
    * ==========================================
    */
 
@@ -96,16 +240,17 @@ export default function App() {
   /*
    * ==========================================
    * セル切り抜き
-   *
-   * 前回より上下を狭くして
-   * 横罫線の影響を減らす
    * ==========================================
    */
 
-  function makeCell(
+  function makeRawCell(
     image,
-    day
+    day,
+    key
   ) {
+    const column =
+      COLUMNS[key];
+
     const rowStep =
       (
         ROW_31_CENTER -
@@ -117,13 +262,17 @@ export default function App() {
       getRowCenter(day);
 
     /*
-     * 31日は下罫線が近いので
-     * 少しだけさらに狭くする
+     * 数字を中心に、
+     * 上下罫線をなるべく除外
      */
-    const heightRatio =
-      day === 31
-        ? 0.42
-        : 0.56;
+    let heightRatio = 0.62;
+
+    /*
+     * 31日は下罫線が近いため
+     */
+    if (day === 31) {
+      heightRatio = 0.48;
+    }
 
     const sourceHeight =
       image.height *
@@ -136,11 +285,11 @@ export default function App() {
 
     const sourceX =
       image.width *
-      INSURANCE.x;
+      column.x;
 
     const sourceWidth =
       image.width *
-      INSURANCE.w;
+      column.w;
 
     const canvas =
       document.createElement(
@@ -149,7 +298,7 @@ export default function App() {
 
     canvas.width =
       Math.max(
-        120,
+        50,
         Math.round(
           sourceWidth
         )
@@ -157,7 +306,7 @@ export default function App() {
 
     canvas.height =
       Math.max(
-        28,
+        22,
         Math.round(
           sourceHeight
         )
@@ -206,30 +355,110 @@ export default function App() {
 
   /*
    * ==========================================
-   * 強いモアレ平均化
-   *
-   * 一度かなり小さくして
-   * 液晶の細かい格子を平均化
+   * グレースケール
    * ==========================================
    */
 
-  function makeSmoothed(
+  function grayscale(
     source
   ) {
-    const small =
+    const canvas =
       document.createElement(
         "canvas"
       );
 
-    /*
-     * 元の縦横比を保ちつつ
-     * かなり縮小
-     */
-    small.width = 150;
-    small.height = 34;
+    canvas.width =
+      source.width;
+
+    canvas.height =
+      source.height;
 
     const ctx =
-      small.getContext(
+      canvas.getContext(
+        "2d",
+        {
+          willReadFrequently:
+            true,
+        }
+      );
+
+    ctx.drawImage(
+      source,
+      0,
+      0
+    );
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+    const data =
+      imageData.data;
+
+    for (
+      let i = 0;
+      i < data.length;
+      i += 4
+    ) {
+      const gray =
+        data[i] * 0.299 +
+        data[i + 1] * 0.587 +
+        data[i + 2] * 0.114;
+
+      data[i] = gray;
+      data[i + 1] = gray;
+      data[i + 2] = gray;
+      data[i + 3] = 255;
+    }
+
+    ctx.putImageData(
+      imageData,
+      0,
+      0
+    );
+
+    return canvas;
+  }
+
+  /*
+   * ==========================================
+   * モアレ低減
+   * ==========================================
+   */
+
+  function reduceMoire(
+    source,
+    factor
+  ) {
+    const canvas =
+      document.createElement(
+        "canvas"
+      );
+
+    canvas.width =
+      Math.max(
+        28,
+        Math.round(
+          source.width *
+          factor
+        )
+      );
+
+    canvas.height =
+      Math.max(
+        15,
+        Math.round(
+          source.height *
+          factor
+        )
+      );
+
+    const ctx =
+      canvas.getContext(
         "2d",
         {
           willReadFrequently:
@@ -242,8 +471,8 @@ export default function App() {
     ctx.fillRect(
       0,
       0,
-      small.width,
-      small.height
+      canvas.width,
+      canvas.height
     );
 
     ctx.imageSmoothingEnabled =
@@ -252,33 +481,38 @@ export default function App() {
     ctx.imageSmoothingQuality =
       "high";
 
-    /*
-     * 軽いぼかしをかけながら縮小
-     */
-    ctx.filter = "blur(1.6px)";
-
     ctx.drawImage(
       source,
       0,
       0,
-      small.width,
-      small.height
+      canvas.width,
+      canvas.height
     );
 
-    ctx.filter = "none";
-
-    return small;
+    return canvas;
   }
 
   /*
    * ==========================================
-   * グレースケールデータ
+   * コントラスト
    * ==========================================
    */
 
-  function getGray(
-    canvas
+  function increaseContrast(
+    source,
+    amount
   ) {
+    const canvas =
+      document.createElement(
+        "canvas"
+      );
+
+    canvas.width =
+      source.width;
+
+    canvas.height =
+      source.height;
+
     const ctx =
       canvas.getContext(
         "2d",
@@ -288,6 +522,12 @@ export default function App() {
         }
       );
 
+    ctx.drawImage(
+      source,
+      0,
+      0
+    );
+
     const imageData =
       ctx.getImageData(
         0,
@@ -296,320 +536,144 @@ export default function App() {
         canvas.height
       );
 
-    const src =
+    const data =
       imageData.data;
 
-    const gray =
-      new Float32Array(
-        canvas.width *
-        canvas.height
-      );
-
-    let p = 0;
-
     for (
       let i = 0;
-      i < src.length;
+      i < data.length;
       i += 4
     ) {
-      gray[p++] =
-        src[i] * 0.299 +
-        src[i + 1] * 0.587 +
-        src[i + 2] * 0.114;
-    }
+      let value =
+        data[i];
 
-    return gray;
-  }
+      value =
+        (
+          value -
+          128
+        ) *
+          amount +
+        128;
 
-  /*
-   * ==========================================
-   * 文字らしさを判定
-   *
-   * ポイント：
-   *
-   * ・右端の「0」は見ない
-   * ・左側に存在する太い低周波成分だけ見る
-   * ・細かいモアレは縮小＋ぼかしで消す
-   * ==========================================
-   */
-
-  function getTextScore(
-    source
-  ) {
-    const smoothed =
-      makeSmoothed(source);
-
-    const w =
-      smoothed.width;
-
-    const h =
-      smoothed.height;
-
-    const gray =
-      getGray(smoothed);
-
-    /*
-     * 数字が広がる左側のみを見る
-     *
-     * 右側約30%は
-     * 「0」と縦罫線があるので除外
-     */
-    const xStart =
-      Math.floor(w * 0.08);
-
-    const xEnd =
-      Math.floor(w * 0.68);
-
-    const yStart =
-      Math.floor(h * 0.15);
-
-    const yEnd =
-      Math.floor(h * 0.85);
-
-    /*
-     * まず領域全体の平均輝度
-     */
-    let sum = 0;
-    let count = 0;
-
-    for (
-      let y = yStart;
-      y < yEnd;
-      y++
-    ) {
-      for (
-        let x = xStart;
-        x < xEnd;
-        x++
-      ) {
-        sum +=
-          gray[
-            y * w + x
-          ];
-
-        count++;
-      }
-    }
-
-    const mean =
-      count
-        ? sum / count
-        : 255;
-
-    /*
-     * 平均より一定以上暗い部分を
-     * 「文字候補」とする
-     */
-    const darkThreshold =
-      mean - 16;
-
-    const columnInk =
-      [];
-
-    for (
-      let x = xStart;
-      x < xEnd;
-      x++
-    ) {
-      let dark = 0;
-
-      for (
-        let y = yStart;
-        y < yEnd;
-        y++
-      ) {
-        if (
-          gray[
-            y * w + x
-          ] <
-          darkThreshold
-        ) {
-          dark++;
-        }
-      }
-
-      columnInk.push(
-        dark /
+      value =
         Math.max(
-          1,
-          yEnd - yStart
-        )
-      );
+          0,
+          Math.min(
+            255,
+            value
+          )
+        );
+
+      data[i] = value;
+      data[i + 1] = value;
+      data[i + 2] = value;
+      data[i + 3] = 255;
     }
 
-    /*
-     * 文字は複数列にまたがるので
-     * 横方向に再度平均化
-     */
-    const averaged =
-      columnInk.map(
-        (_, index) => {
-          let total = 0;
-          let n = 0;
+    ctx.putImageData(
+      imageData,
+      0,
+      0
+    );
 
-          for (
-            let dx = -2;
-            dx <= 2;
-            dx++
-          ) {
-            const value =
-              columnInk[
-                index + dx
-              ];
-
-            if (
-              value !==
-              undefined
-            ) {
-              total += value;
-              n++;
-            }
-          }
-
-          return n
-            ? total / n
-            : 0;
-        }
-      );
-
-    /*
-     * 十分に太い領域だけ
-     */
-    const active =
-      averaged.map(
-        (value) =>
-          value > 0.18
-      );
-
-    /*
-     * 連続した活性領域を抽出
-     */
-    const runs = [];
-
-    let start = null;
-
-    for (
-      let i = 0;
-      i <= active.length;
-      i++
-    ) {
-      const on =
-        i < active.length
-          ? active[i]
-          : false;
-
-      if (
-        on &&
-        start === null
-      ) {
-        start = i;
-      }
-
-      if (
-        !on &&
-        start !== null
-      ) {
-        runs.push({
-          start,
-          end: i - 1,
-          width:
-            i - start,
-        });
-
-        start = null;
-      }
-    }
-
-    /*
-     * かなり細いものは
-     * モアレとして除外
-     */
-    const strongRuns =
-      runs.filter(
-        (run) =>
-          run.width >= 3
-      );
-
-    const strongWidth =
-      strongRuns.reduce(
-        (sum, run) =>
-          sum +
-          run.width,
-        0
-      );
-
-    /*
-     * 一番左に数字がどこまであるか
-     */
-    const firstRun =
-      strongRuns[0];
-
-    const lastRun =
-      strongRuns[
-        strongRuns.length -
-          1
-      ];
-
-    const span =
-      firstRun &&
-      lastRun
-        ? (
-            lastRun.end -
-            firstRun.start +
-            1
-          ) /
-          active.length
-        : 0;
-
-    const widthRatio =
-      strongWidth /
-      Math.max(
-        1,
-        active.length
-      );
-
-    /*
-     * 数字の塊が複数あるほど
-     * 診療日らしい
-     */
-    const componentScore =
-      Math.min(
-        strongRuns.length /
-          4,
-        1
-      );
-
-    const score =
-      span * 0.45 +
-      widthRatio * 0.35 +
-      componentScore * 0.20;
-
-    return {
-      score,
-      span,
-      widthRatio,
-      components:
-        strongRuns.length,
-      smoothed,
-    };
+    return canvas;
   }
 
   /*
    * ==========================================
-   * 確認用プレビュー
+   * 2値化
    * ==========================================
    */
 
-  function makePreview(
-    source
+  function threshold(
+    source,
+    value
   ) {
     const canvas =
       document.createElement(
         "canvas"
       );
 
-    canvas.width = 420;
-    canvas.height = 90;
+    canvas.width =
+      source.width;
+
+    canvas.height =
+      source.height;
+
+    const ctx =
+      canvas.getContext(
+        "2d",
+        {
+          willReadFrequently:
+            true,
+        }
+      );
+
+    ctx.drawImage(
+      source,
+      0,
+      0
+    );
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+    const data =
+      imageData.data;
+
+    for (
+      let i = 0;
+      i < data.length;
+      i += 4
+    ) {
+      const v =
+        data[i] <
+        value
+          ? 0
+          : 255;
+
+      data[i] = v;
+      data[i + 1] = v;
+      data[i + 2] = v;
+      data[i + 3] = 255;
+    }
+
+    ctx.putImageData(
+      imageData,
+      0,
+      0
+    );
+
+    return canvas;
+  }
+
+  /*
+   * ==========================================
+   * 拡大
+   * ==========================================
+   */
+
+  function upscale(
+    source,
+    scale = 3
+  ) {
+    const canvas =
+      document.createElement(
+        "canvas"
+      );
+
+    canvas.width =
+      source.width *
+      scale;
+
+    canvas.height =
+      source.height *
+      scale;
 
     const ctx =
       canvas.getContext("2d");
@@ -637,182 +701,824 @@ export default function App() {
       canvas.height
     );
 
-    return canvas.toDataURL(
-      "image/jpeg",
-      0.92
+    return canvas;
+  }
+
+  /*
+   * ==========================================
+   * Canvas → Blob
+   * ==========================================
+   */
+
+  function canvasToBlob(
+    canvas
+  ) {
+    return new Promise(
+      (resolve, reject) => {
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) {
+              reject(
+                new Error(
+                  "画像変換に失敗しました"
+                )
+              );
+
+              return;
+            }
+
+            resolve(blob);
+          },
+          "image/png",
+          1
+        );
+      }
     );
   }
 
   /*
    * ==========================================
-   * 31日解析
+   * OCR文字整理
    * ==========================================
    */
 
-  function detectDays() {
-    if (!image) return;
+  function cleanOCR(
+    text,
+    key
+  ) {
+    let value =
+      String(text || "")
+        .replace(/[Oo]/g, "0")
+        .replace(/[Il|]/g, "1")
+        .replace(/\D/g, "");
 
-    const output = [];
+    const maxDigits =
+      COLUMNS[key]
+        .maxDigits;
+
+    if (
+      value.length >
+      maxDigits
+    ) {
+      value =
+        value.slice(
+          -maxDigits
+        );
+    }
+
+    return value;
+  }
+
+  /*
+   * ==========================================
+   * Tesseract 1回
+   * ==========================================
+   */
+
+  async function recognizeVariant(
+    worker,
+    canvas,
+    key
+  ) {
+    const blob =
+      await canvasToBlob(
+        canvas
+      );
+
+    await worker.setParameters({
+      tessedit_char_whitelist:
+        "0123456789,",
+
+      /*
+       * 1行の数字として認識
+       */
+      tessedit_pageseg_mode:
+        "7",
+
+      user_defined_dpi:
+        "300",
+    });
+
+    const result =
+      await worker.recognize(
+        blob
+      );
+
+    return {
+      value:
+        cleanOCR(
+          result.data.text,
+          key
+        ),
+
+      confidence:
+        Number(
+          result.data.confidence ||
+          0
+        ),
+    };
+  }
+
+  /*
+   * ==========================================
+   * セルOCR
+   *
+   * 3パターンで読み、多数決
+   * ==========================================
+   */
+
+  async function recognizeCell(
+    worker,
+    image,
+    day,
+    key
+  ) {
+    const raw =
+      makeRawCell(
+        image,
+        day,
+        key
+      );
+
+    const gray =
+      grayscale(raw);
+
+    const reduced1 =
+      reduceMoire(
+        gray,
+        0.72
+      );
+
+    const reduced2 =
+      reduceMoire(
+        gray,
+        0.64
+      );
+
+    const variants = [
+      /*
+       * パターン1
+       * コントラスト
+       */
+      upscale(
+        increaseContrast(
+          reduced1,
+          1.55
+        ),
+        3
+      ),
+
+      /*
+       * パターン2
+       * 2値化弱め
+       */
+      upscale(
+        threshold(
+          reduced2,
+          160
+        ),
+        3
+      ),
+
+      /*
+       * パターン3
+       * 2値化強め
+       */
+      upscale(
+        threshold(
+          reduced1,
+          180
+        ),
+        3
+      ),
+    ];
+
+    const attempts = [];
 
     for (
-      let day = 1;
-      day <= 31;
-      day++
+      const variant of
+      variants
     ) {
-      const raw =
-        makeCell(
-          image,
-          day
-        );
-
-      const result =
-        getTextScore(raw);
-
-      output.push({
-        day,
-
-        score:
-          result.score,
-
-        span:
-          result.span,
-
-        widthRatio:
-          result.widthRatio,
-
-        components:
-          result.components,
-
-        preview:
-          makePreview(raw),
-
-        smoothedPreview:
-          makePreview(
-            result.smoothed
-          ),
-      });
+      attempts.push(
+        await recognizeVariant(
+          worker,
+          variant,
+          key
+        )
+      );
     }
 
     /*
-     * ======================================
-     * 非診療日多数を前提に
-     * スコア分布から自動しきい値
-     * ======================================
+     * 多数決
      */
 
-    const scores =
-      output
-        .map(
-          (row) =>
-            row.score
-        )
-        .sort(
-          (a, b) =>
-            a - b
-        );
+    const counts = {};
 
-    const median =
-      scores[
-        Math.floor(
-          scores.length /
-            2
-        )
-      ];
+    for (
+      const attempt of
+      attempts
+    ) {
+      if (!attempt.value) {
+        continue;
+      }
 
-    const deviations =
-      scores
-        .map(
-          (value) =>
-            Math.abs(
-              value -
-              median
-            )
-        )
-        .sort(
-          (a, b) =>
-            a - b
-        );
+      counts[
+        attempt.value
+      ] =
+        (
+          counts[
+            attempt.value
+          ] || 0
+        ) + 1;
+    }
 
-    const mad =
-      deviations[
-        Math.floor(
-          deviations.length /
-            2
-        )
-      ];
+    const sorted =
+      Object.entries(
+        counts
+      ).sort(
+        (a, b) =>
+          b[1] - a[1]
+      );
+
+    const value =
+      sorted[0]?.[0] || "";
+
+    const agreement =
+      sorted[0]?.[1] || 0;
 
     /*
-     * 今回は少し緩め
-     *
-     * 見逃すより、
-     * 余計な日を少し選ぶ方を優先
+     * ======================================
+     * 要確認判定
+     * ======================================
      */
-    const threshold =
-      median +
-      Math.max(
-        mad * 1.8,
-        0.035
-      );
 
-    const finalRows =
-      output.map(
-        (row) => ({
-          ...row,
+    let warning = false;
 
-          selected:
-            row.score >
-              threshold &&
-            row.day !== 31
-              ? true
-              : row.day === 31 &&
-                row.score >
-                  threshold +
-                    0.08,
-        })
-      );
+    /*
+     * 空欄
+     */
+    if (!value) {
+      warning = true;
+    }
 
-    setRows(finalRows);
+    /*
+     * 3回中2回以上一致しない
+     */
+    if (
+      value &&
+      agreement < 2
+    ) {
+      warning = true;
+    }
+
+    const number =
+      Number(value);
+
+    /*
+     * 実患者
+     */
+    if (
+      key === "patients" &&
+      (
+        !value ||
+        number < 1 ||
+        number > 60
+      )
+    ) {
+      warning = true;
+    }
+
+    /*
+     * 点数
+     */
+    if (
+      key !== "patients" &&
+      (
+        !value ||
+        number < 100
+      )
+    ) {
+      warning = true;
+    }
+
+    return {
+      value,
+
+      warning,
+
+      agreement,
+
+      attempts:
+        attempts.map(
+          (item) =>
+            item.value ||
+            "空"
+        ),
+
+      /*
+       * 人間確認用なので
+       * OCR前処理画像ではなく
+       * 元の切り抜きを表示
+       */
+      preview:
+        raw.toDataURL(
+          "image/jpeg",
+          0.95
+        ),
+    };
   }
 
   /*
    * ==========================================
-   * 手動ON/OFF
+   * 選択日をOCR
    * ==========================================
    */
 
-  function toggleDay(day) {
-    setRows(
+  async function analyzeSelectedDays() {
+    if (
+      !images.length ||
+      isAnalyzing
+    ) {
+      return;
+    }
+
+    const totalDays =
+      Object.values(
+        selectedDays
+      ).reduce(
+        (sum, days) =>
+          sum +
+          days.length,
+        0
+      );
+
+    if (!totalDays) {
+      setError(
+        "診療日を選択してください"
+      );
+
+      return;
+    }
+
+    setResults([]);
+    setError("");
+    setElapsed(null);
+    setProgress(0);
+    setIsAnalyzing(true);
+
+    const started =
+      performance.now();
+
+    let worker;
+
+    try {
+      setStatusText(
+        "OCRエンジンを準備しています…"
+      );
+
+      worker =
+        await createWorker(
+          "eng",
+          1
+        );
+
+      const output = [];
+
+      const totalCells =
+        totalDays * 3;
+
+      let completed = 0;
+
+      for (
+        let fileIndex = 0;
+        fileIndex <
+        images.length;
+        fileIndex++
+      ) {
+        const image =
+          images[fileIndex];
+
+        const days =
+          selectedDays[
+            fileIndex
+          ] || [];
+
+        for (
+          const day of days
+        ) {
+          const row = {
+            id:
+              `${fileIndex}-${day}`,
+
+            fileIndex,
+
+            fileName:
+              files[
+                fileIndex
+              ]?.name || "",
+
+            day,
+
+            patients: "",
+            insurance: "",
+            care: "",
+
+            warnings: {
+              patients:
+                false,
+
+              insurance:
+                false,
+
+              care:
+                false,
+            },
+
+            previews: {},
+
+            attempts: {},
+          };
+
+          for (
+            const key of [
+              "patients",
+              "insurance",
+              "care",
+            ]
+          ) {
+            setStatusText(
+              `${fileIndex + 1}/${images.length}枚目　${day}日 ${COLUMNS[key].label} を解析中…`
+            );
+
+            const result =
+              await recognizeCell(
+                worker,
+                image,
+                day,
+                key
+              );
+
+            row[key] =
+              result.value;
+
+            row.warnings[
+              key
+            ] =
+              result.warning;
+
+            row.previews[
+              key
+            ] =
+              result.preview;
+
+            row.attempts[
+              key
+            ] =
+              result.attempts;
+
+            completed++;
+
+            setProgress(
+              Math.round(
+                (
+                  completed /
+                  totalCells
+                ) *
+                  100
+              )
+            );
+          }
+
+          output.push(row);
+        }
+      }
+
+      /*
+       * 日付順
+       */
+      output.sort(
+        (a, b) => {
+          if (
+            a.day !== b.day
+          ) {
+            return (
+              a.day -
+              b.day
+            );
+          }
+
+          return (
+            a.fileIndex -
+            b.fileIndex
+          );
+        }
+      );
+
+      setResults(output);
+
+      setElapsed(
+        (
+          (
+            performance.now() -
+            started
+          ) /
+          1000
+        ).toFixed(1)
+      );
+
+      setStatusText(
+        "解析が完了しました"
+      );
+
+      setProgress(100);
+    } catch (e) {
+      console.error(e);
+
+      setError(
+        "OCR解析中にエラーが発生しました"
+      );
+
+      setStatusText("");
+    } finally {
+      if (worker) {
+        await worker.terminate();
+      }
+
+      setIsAnalyzing(false);
+    }
+  }
+
+  /*
+   * ==========================================
+   * 手修正
+   * ==========================================
+   */
+
+  function updateCell(
+    rowIndex,
+    key,
+    value
+  ) {
+    const cleaned =
+      value.replace(
+        /\D/g,
+        ""
+      );
+
+    setResults(
       (current) =>
         current.map(
-          (row) =>
-            row.day === day
-              ? {
-                  ...row,
+          (row, index) => {
+            if (
+              index !==
+              rowIndex
+            ) {
+              return row;
+            }
 
-                  selected:
-                    !row.selected,
-                }
-              : row
+            return {
+              ...row,
+
+              [key]:
+                cleaned,
+
+              warnings: {
+                ...row.warnings,
+
+                /*
+                 * 人が入力したら
+                 * 要確認解除
+                 */
+                [key]:
+                  false,
+              },
+            };
+          }
         )
     );
   }
 
-  const selectedDays =
-    rows
-      .filter(
-        (row) =>
-          row.selected
-      )
-      .map(
-        (row) =>
+  /*
+   * ==========================================
+   * 要確認数
+   * ==========================================
+   */
+
+  const warningCount =
+    useMemo(() => {
+      let count = 0;
+
+      for (
+        const row of results
+      ) {
+        for (
+          const key of [
+            "patients",
+            "insurance",
+            "care",
+          ]
+        ) {
+          if (
+            row.warnings[
+              key
+            ]
+          ) {
+            count++;
+          }
+        }
+      }
+
+      return count;
+    }, [results]);
+
+  /*
+   * ==========================================
+   * 日付ごとに集約
+   *
+   * 複数画像で同じ日があれば
+   * 合算する
+   * ==========================================
+   */
+
+  const mergedRows =
+    useMemo(() => {
+      const map = {};
+
+      for (
+        const row of
+        results
+      ) {
+        if (!map[row.day]) {
+          map[row.day] = {
+            day:
+              row.day,
+
+            patients: 0,
+
+            insurance: 0,
+
+            care: 0,
+          };
+        }
+
+        map[
           row.day
+        ].patients +=
+          Number(
+            row.patients
+          ) || 0;
+
+        map[
+          row.day
+        ].insurance +=
+          Number(
+            row.insurance
+          ) || 0;
+
+        map[
+          row.day
+        ].care +=
+          Number(
+            row.care
+          ) || 0;
+      }
+
+      return Object.values(
+        map
+      ).sort(
+        (a, b) =>
+          a.day -
+          b.day
       );
+    }, [results]);
+
+  /*
+   * ==========================================
+   * 合計
+   * ==========================================
+   */
+
+  const totals =
+    useMemo(() => {
+      return mergedRows.reduce(
+        (acc, row) => {
+          acc.patients +=
+            row.patients;
+
+          acc.insurance +=
+            row.insurance;
+
+          acc.care +=
+            row.care;
+
+          return acc;
+        },
+        {
+          patients: 0,
+          insurance: 0,
+          care: 0,
+        }
+      );
+    }, [mergedRows]);
+
+  const totalPoints =
+    totals.insurance +
+    totals.care;
+
+  /*
+   * ==========================================
+   * Excel
+   * ==========================================
+   */
+
+  function exportExcel() {
+    if (!mergedRows.length) {
+      return;
+    }
+
+    const data =
+      mergedRows.map(
+        (row) => ({
+          日付:
+            `${row.day}日`,
+
+          実患者:
+            row.patients,
+
+          保険診療分:
+            row.insurance,
+
+          介護保険:
+            row.care,
+
+          合計:
+            row.insurance +
+            row.care,
+        })
+      );
+
+    /*
+     * 合計行
+     */
+
+    data.push({
+      日付:
+        "合計",
+
+      実患者:
+        totals.patients,
+
+      保険診療分:
+        totals.insurance,
+
+      介護保険:
+        totals.care,
+
+      合計:
+        totalPoints,
+    });
+
+    const worksheet =
+      XLSX.utils.json_to_sheet(
+        data
+      );
+
+    worksheet["!cols"] = [
+      { wch: 10 },
+      { wch: 12 },
+      { wch: 16 },
+      { wch: 16 },
+      { wch: 16 },
+    ];
+
+    const workbook =
+      XLSX.utils.book_new();
+
+    XLSX.utils.book_append_sheet(
+      workbook,
+      worksheet,
+      "診療日別集計"
+    );
+
+    XLSX.writeFile(
+      workbook,
+      "診療日別集計.xlsx"
+    );
+  }
+
+  /*
+   * ==========================================
+   * 表示
+   * ==========================================
+   */
 
   return (
     <main className="page">
+
       <section className="app">
 
         <header>
+
           <div className="logo">
             歯
           </div>
@@ -823,14 +1529,20 @@ export default function App() {
             </h1>
 
             <p>
-              診療日検出テスト
+              診療日別集計表 → Excel
             </p>
           </div>
+
         </header>
 
         <div className="privacy">
-          🔒 画像は端末内だけで処理します
+          🔒 画像・OCR処理は端末内で行われ、
+          外部サーバーへ送信されません
         </div>
+
+        {/* ==============================
+            STEP 1
+        ============================== */}
 
         <section className="card">
 
@@ -839,21 +1551,29 @@ export default function App() {
           </span>
 
           <h2>
-            画像を選択
+            集計画像を選択
           </h2>
+
+          <p className="description">
+            同じ月の画像を複数選択できます。
+          </p>
 
           <input
             ref={inputRef}
             className="hidden-input"
             type="file"
             accept="image/*"
+            multiple
             onChange={
-              handleFile
+              handleFiles
             }
           />
 
           <button
             className="select-button"
+            disabled={
+              isAnalyzing
+            }
             onClick={() =>
               inputRef.current?.click()
             }
@@ -861,21 +1581,44 @@ export default function App() {
             ＋画像を選択
           </button>
 
-          {file && (
+          {files.length > 0 && (
             <div className="selected">
-              {file.name}
-            </div>
-          )}
 
-          {error && (
-            <div className="error-message">
-              {error}
+              <strong>
+                {files.length}
+                枚選択
+              </strong>
+
+              {files.map(
+                (
+                  file,
+                  index
+                ) => (
+                  <div
+                    key={index}
+                    style={{
+                      marginTop:
+                        "5px",
+
+                      fontSize:
+                        "12px",
+                    }}
+                  >
+                    {file.name}
+                  </div>
+                )
+              )}
+
             </div>
           )}
 
         </section>
 
-        {image && (
+        {/* ==============================
+            STEP 2
+        ============================== */}
+
+        {images.length > 0 && (
           <section className="card">
 
             <span className="step">
@@ -883,27 +1626,197 @@ export default function App() {
             </span>
 
             <h2>
-              診療日を検出
+              診療日を選択
             </h2>
 
             <p className="description">
-              液晶モアレを強く平均化してから、
-              数字の太い形だけを探します。
+              各画像について、
+              診療した日をタップしてください。
+              青色が選択中です。
             </p>
 
-            <button
-              className="select-button"
-              onClick={
-                detectDays
+            {files.map(
+              (
+                file,
+                fileIndex
+              ) => {
+
+                const days =
+                  selectedDays[
+                    fileIndex
+                  ] || [];
+
+                return (
+                  <div
+                    key={
+                      fileIndex
+                    }
+                    style={{
+                      marginTop:
+                        fileIndex
+                          ? "32px"
+                          : "15px",
+                    }}
+                  >
+
+                    <div
+                      style={{
+                        display:
+                          "flex",
+
+                        justifyContent:
+                          "space-between",
+
+                        alignItems:
+                          "center",
+
+                        gap:
+                          "10px",
+
+                        marginBottom:
+                          "10px",
+                      }}
+                    >
+
+                      <strong
+                        style={{
+                          fontSize:
+                            "14px",
+                        }}
+                      >
+                        {file.name}
+                      </strong>
+
+                      <button
+                        onClick={() =>
+                          clearDays(
+                            fileIndex
+                          )
+                        }
+                        style={
+                          miniButton
+                        }
+                      >
+                        クリア
+                      </button>
+
+                    </div>
+
+                    <div
+                      style={{
+                        marginBottom:
+                          "10px",
+
+                        fontSize:
+                          "12px",
+
+                        color:
+                          "#64748b",
+                      }}
+                    >
+                      選択：
+                      {days.length}
+                      日
+                      {days.length
+                        ? `（${days.join("・")}）`
+                        : ""}
+                    </div>
+
+                    <div
+                      style={{
+                        display:
+                          "grid",
+
+                        gridTemplateColumns:
+                          "repeat(7, 1fr)",
+
+                        gap:
+                          "6px",
+                      }}
+                    >
+
+                      {Array.from(
+                        {
+                          length:
+                            31,
+                        },
+
+                        (
+                          _,
+                          i
+                        ) =>
+                          i + 1
+                      ).map(
+                        (day) => {
+
+                          const selected =
+                            days.includes(
+                              day
+                            );
+
+                          return (
+                            <button
+                              key={
+                                day
+                              }
+                              onClick={() =>
+                                toggleDay(
+                                  fileIndex,
+                                  day
+                                )
+                              }
+                              style={{
+                                border:
+                                  selected
+                                    ? "2px solid #2563eb"
+                                    : "1px solid #cbd5e1",
+
+                                background:
+                                  selected
+                                    ? "#dbeafe"
+                                    : "#fff",
+
+                                color:
+                                  selected
+                                    ? "#1d4ed8"
+                                    : "#334155",
+
+                                borderRadius:
+                                  "9px",
+
+                                padding:
+                                  "9px 2px",
+
+                                fontSize:
+                                  "15px",
+
+                                fontWeight:
+                                  selected
+                                    ? 700
+                                    : 400,
+                              }}
+                            >
+                              {day}
+                            </button>
+                          );
+                        }
+                      )}
+
+                    </div>
+
+                  </div>
+                );
               }
-            >
-              診療日を検出
-            </button>
+            )}
 
           </section>
         )}
 
-        {rows.length > 0 && (
+        {/* ==============================
+            STEP 3
+        ============================== */}
+
+        {images.length > 0 && (
           <section className="card">
 
             <span className="step">
@@ -911,16 +1824,107 @@ export default function App() {
             </span>
 
             <h2>
-              判定結果
+              選択日をOCR
             </h2>
+
+            <p className="description">
+              選択した診療日だけを読み取ります。
+            </p>
+
+            <button
+              className="select-button"
+              disabled={
+                isAnalyzing
+              }
+              onClick={
+                analyzeSelectedDays
+              }
+            >
+              {isAnalyzing
+                ? "解析中…"
+                : "選択した日を解析"}
+            </button>
+
+            {statusText && (
+              <div className="ocr-status">
+
+                <p>
+                  {statusText}
+                </p>
+
+                <div className="progress-track">
+
+                  <div
+                    className="progress-bar"
+                    style={{
+                      width:
+                        `${progress}%`,
+                    }}
+                  />
+
+                </div>
+
+                <div
+                  style={{
+                    marginTop:
+                      "5px",
+
+                    textAlign:
+                      "right",
+
+                    fontSize:
+                      "12px",
+                  }}
+                >
+                  {progress}%
+                </div>
+
+              </div>
+            )}
+
+            {elapsed && (
+              <div className="selected">
+                解析時間：
+                <strong>
+                  {elapsed}
+                  秒
+                </strong>
+              </div>
+            )}
+
+            {error && (
+              <div className="error-message">
+                {error}
+              </div>
+            )}
+
+          </section>
+        )}
+
+        {/* ==============================
+            STEP 4
+        ============================== */}
+
+        {results.length > 0 && (
+          <section className="card">
+
+            <span className="step">
+              STEP 4
+            </span>
+
+            <h2>
+              読み取り結果を確認
+            </h2>
+
+            <p className="description">
+              黄色の項目は要確認です。
+              元画像の数字を見ながら修正してください。
+            </p>
 
             <div
               style={{
                 padding:
                   "12px",
-
-                background:
-                  "#eef6ff",
 
                 borderRadius:
                   "10px",
@@ -930,212 +1934,261 @@ export default function App() {
 
                 fontWeight:
                   700,
+
+                background:
+                  warningCount
+                    ? "#fff7d6"
+                    : "#ecfdf5",
+
+                border:
+                  warningCount
+                    ? "1px solid #facc15"
+                    : "1px solid #86efac",
               }}
             >
-              診療日候補：
-              {selectedDays.length}
-              日
-              <br />
-
-              {selectedDays.join(
-                "・"
-              )}
+              {warningCount
+                ? `⚠️ 要確認：${warningCount}箇所`
+                : "✓ 要確認箇所はありません"}
             </div>
 
-            {rows.map(
-              (row) => (
+            {results.map(
+              (
+                row,
+                rowIndex
+              ) => (
                 <div
                   key={
-                    row.day
-                  }
-                  onClick={() =>
-                    toggleDay(
-                      row.day
-                    )
+                    row.id
                   }
                   style={{
-                    marginBottom:
-                      "10px",
-
-                    padding:
-                      "8px",
-
                     border:
-                      row.selected
-                        ? "2px solid #2563eb"
-                        : "1px solid #e2e8f0",
-
-                    background:
-                      row.selected
-                        ? "#dbeafe"
-                        : "#fff",
+                      "1px solid #dbe3ea",
 
                     borderRadius:
-                      "10px",
+                      "12px",
+
+                    marginBottom:
+                      "18px",
+
+                    overflow:
+                      "hidden",
                   }}
                 >
 
                   <div
                     style={{
-                      display:
-                        "flex",
+                      padding:
+                        "10px 12px",
 
-                      alignItems:
-                        "center",
-
-                      gap:
-                        "10px",
+                      background:
+                        "#eef6ff",
                     }}
                   >
-                    <div
+
+                    <strong
                       style={{
-                        width:
-                          "46px",
-
-                        flexShrink:
-                          0,
-
-                        textAlign:
-                          "center",
+                        fontSize:
+                          "18px",
                       }}
                     >
-                      <div
-                        style={{
-                          fontSize:
-                            "19px",
+                      {row.day}日
+                    </strong>
 
-                          fontWeight:
-                            700,
-                        }}
-                      >
-                        {
-                          row.day
-                        }
-                      </div>
-
-                      <div
-                        style={{
-                          fontSize:
-                            "9px",
-
-                          color:
-                            "#64748b",
-                        }}
-                      >
-                        {row.score.toFixed(
-                          3
-                        )}
-                      </div>
-                    </div>
-
-                    <img
-                      src={
-                        row.preview
-                      }
-                      alt=""
-                      style={{
-                        width:
-                          "calc(100% - 56px)",
-
-                        height:
-                          "52px",
-
-                        objectFit:
-                          "contain",
-
-                        background:
-                          "#fff",
-                      }}
-                    />
-                  </div>
-
-                  <div
-                    style={{
-                      marginTop:
-                        "6px",
-
-                      paddingTop:
-                        "6px",
-
-                      borderTop:
-                        "1px dashed #cbd5e1",
-
-                      display:
-                        "flex",
-
-                      alignItems:
-                        "center",
-
-                      gap:
-                        "8px",
-                    }}
-                  >
                     <div
                       style={{
-                        width:
-                          "46px",
-
                         fontSize:
-                          "9px",
+                          "10px",
 
                         color:
                           "#64748b",
+
+                        marginTop:
+                          "2px",
                       }}
                     >
-                      平均化
+                      {row.fileName}
                     </div>
 
-                    <img
-                      src={
-                        row.smoothedPreview
-                      }
-                      alt=""
-                      style={{
-                        width:
-                          "calc(100% - 56px)",
-
-                        height:
-                          "38px",
-
-                        objectFit:
-                          "contain",
-
-                        background:
-                          "#fff",
-                      }}
-                    />
                   </div>
 
-                  <div
-                    style={{
-                      fontSize:
-                        "9px",
+                  {[
+                    "patients",
+                    "insurance",
+                    "care",
+                  ].map(
+                    (key) => {
 
-                      color:
-                        "#64748b",
+                      const warning =
+                        row
+                          .warnings[
+                          key
+                        ];
 
-                      marginTop:
-                        "5px",
+                      return (
+                        <div
+                          key={
+                            key
+                          }
+                          style={{
+                            padding:
+                              "12px",
 
-                      textAlign:
-                        "right",
-                    }}
-                  >
-                    span{" "}
-                    {row.span.toFixed(
-                      2
-                    )}
-                    {" / "}
-                    width{" "}
-                    {row.widthRatio.toFixed(
-                      2
-                    )}
-                    {" / "}
-                    blocks{" "}
-                    {
-                      row.components
+                            borderTop:
+                              "1px solid #e2e8f0",
+
+                            background:
+                              warning
+                                ? "#fffbea"
+                                : "#fff",
+                          }}
+                        >
+
+                          <div
+                            style={{
+                              fontSize:
+                                "12px",
+
+                              fontWeight:
+                                700,
+
+                              marginBottom:
+                                "7px",
+                            }}
+                          >
+                            {
+                              COLUMNS[
+                                key
+                              ].label
+                            }
+
+                            {warning &&
+                              " ⚠️ 要確認"}
+                          </div>
+
+                          {/* 元画像 */}
+
+                          <div
+                            style={{
+                              background:
+                                "#fff",
+
+                              border:
+                                "1px solid #dbe3ea",
+
+                              borderRadius:
+                                "7px",
+
+                              overflow:
+                                "hidden",
+
+                              padding:
+                                "4px",
+                            }}
+                          >
+
+                            <img
+                              src={
+                                row
+                                  .previews[
+                                  key
+                                ]
+                              }
+                              alt=""
+                              style={{
+                                width:
+                                  "100%",
+
+                                height:
+                                  "60px",
+
+                                objectFit:
+                                  "contain",
+
+                                display:
+                                  "block",
+                              }}
+                            />
+
+                          </div>
+
+                          {/* 修正欄 */}
+
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={
+                              row[key]
+                            }
+                            placeholder="数字を入力"
+                            onChange={
+                              (e) =>
+                                updateCell(
+                                  rowIndex,
+                                  key,
+                                  e
+                                    .target
+                                    .value
+                                )
+                            }
+                            style={{
+                              width:
+                                "100%",
+
+                              boxSizing:
+                                "border-box",
+
+                              marginTop:
+                                "8px",
+
+                              padding:
+                                "10px",
+
+                              fontSize:
+                                "20px",
+
+                              textAlign:
+                                "right",
+
+                              border:
+                                warning
+                                  ? "2px solid #f59e0b"
+                                  : "1px solid #cbd5e1",
+
+                              borderRadius:
+                                "8px",
+
+                              background:
+                                "#fff",
+                            }}
+                          />
+
+                          <div
+                            style={{
+                              fontSize:
+                                "10px",
+
+                              color:
+                                "#64748b",
+
+                              marginTop:
+                                "5px",
+                            }}
+                          >
+                            OCR候補：
+                            {
+                              row
+                                .attempts[
+                                key
+                              ].join(
+                                " / "
+                              )
+                            }
+                          </div>
+
+                        </div>
+                      );
                     }
-                  </div>
+                  )}
 
                 </div>
               )
@@ -1144,11 +2197,130 @@ export default function App() {
           </section>
         )}
 
+        {/* ==============================
+            STEP 5
+        ============================== */}
+
+        {results.length > 0 && (
+          <section className="card">
+
+            <span className="step">
+              STEP 5
+            </span>
+
+            <h2>
+              集計
+            </h2>
+
+            <div
+              style={{
+                background:
+                  "#eef6ff",
+
+                padding:
+                  "14px",
+
+                borderRadius:
+                  "10px",
+
+                lineHeight:
+                  "1.9",
+              }}
+            >
+
+              <div>
+                出勤日数：
+                <strong>
+                  {
+                    mergedRows.length
+                  }
+                  日
+                </strong>
+              </div>
+
+              <div>
+                実患者：
+                <strong>
+                  {
+                    totals.patients
+                  }
+                  人
+                </strong>
+              </div>
+
+              <div>
+                保険診療分：
+                <strong>
+                  {totals.insurance.toLocaleString()}
+                </strong>
+              </div>
+
+              <div>
+                介護保険：
+                <strong>
+                  {totals.care.toLocaleString()}
+                </strong>
+              </div>
+
+              <div
+                style={{
+                  marginTop:
+                    "5px",
+
+                  fontSize:
+                    "18px",
+                }}
+              >
+                合計：
+                <strong>
+                  {totalPoints.toLocaleString()}
+                </strong>
+              </div>
+
+            </div>
+
+            <button
+              className="select-button"
+              style={{
+                marginTop:
+                  "18px",
+              }}
+              onClick={
+                exportExcel
+              }
+            >
+              Excelを作成
+            </button>
+
+          </section>
+        )}
+
         <footer>
-          モアレ平均化・診療日検出
+          半自動OCR 実用テスト版
         </footer>
 
       </section>
+
     </main>
   );
 }
+
+const miniButton = {
+  border:
+    "1px solid #cbd5e1",
+
+  background:
+    "#fff",
+
+  borderRadius:
+    "7px",
+
+  padding:
+    "6px 10px",
+
+  fontSize:
+    "11px",
+
+  whiteSpace:
+    "nowrap",
+};
