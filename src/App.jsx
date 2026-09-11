@@ -3,44 +3,28 @@ import { createWorker } from "tesseract.js";
 import * as XLSX from "xlsx";
 
 export default function App() {
+  const now = new Date();
+
+  const [year, setYear] = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+
   const [files, setFiles] = useState([]);
   const [images, setImages] = useState([]);
 
-  /*
-   * 画像ごとの選択日
-   *
-   * {
-   *   0: [7,12,14,...],
-   *   1: [6,10,11,...]
-   * }
-   */
-  const [selectedDays, setSelectedDays] =
-    useState({});
+  const [selectedDays, setSelectedDays] = useState({});
+  const [results, setResults] = useState([]);
 
-  const [results, setResults] =
-    useState([]);
-
-  const [isAnalyzing, setIsAnalyzing] =
-    useState(false);
-
-  const [statusText, setStatusText] =
-    useState("");
-
-  const [progress, setProgress] =
-    useState(0);
-
-  const [elapsed, setElapsed] =
-    useState(null);
-
-  const [error, setError] =
-    useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [statusText, setStatusText] = useState("");
+  const [progress, setProgress] = useState(0);
+  const [elapsed, setElapsed] = useState(null);
+  const [error, setError] = useState("");
 
   const inputRef = useRef(null);
 
   /*
    * ==========================================
    * 現在の帳票位置
-   *
    * 大宮画像で調整済み
    * ==========================================
    */
@@ -71,6 +55,42 @@ export default function App() {
     },
   };
 
+  const WEEKDAYS = [
+    "日",
+    "月",
+    "火",
+    "水",
+    "木",
+    "金",
+    "土",
+  ];
+
+  /*
+   * ==========================================
+   * カレンダー
+   * ==========================================
+   */
+
+  const daysInMonth = useMemo(() => {
+    return new Date(year, month, 0).getDate();
+  }, [year, month]);
+
+  const firstWeekday = useMemo(() => {
+    return new Date(year, month - 1, 1).getDay();
+  }, [year, month]);
+
+  function getWeekday(day) {
+    return new Date(
+      year,
+      month - 1,
+      day
+    ).getDay();
+  }
+
+  function getWeekdayLabel(day) {
+    return WEEKDAYS[getWeekday(day)];
+  }
+
   /*
    * ==========================================
    * 画像選択
@@ -78,14 +98,11 @@ export default function App() {
    */
 
   async function handleFiles(event) {
-    const selected =
-      Array.from(
-        event.target.files || []
-      );
+    const selected = Array.from(
+      event.target.files || []
+    );
 
-    if (!selected.length) {
-      return;
-    }
+    if (!selected.length) return;
 
     setFiles(selected);
     setResults([]);
@@ -106,16 +123,11 @@ export default function App() {
 
       setImages(loaded);
 
-      /*
-       * 各画像の初期選択日は空
-       */
       const initial = {};
 
-      selected.forEach(
-        (_, index) => {
-          initial[index] = [];
-        }
-      );
+      selected.forEach((_, index) => {
+        initial[index] = [];
+      });
 
       setSelectedDays(initial);
     } catch (e) {
@@ -130,9 +142,7 @@ export default function App() {
   function loadImage(file) {
     return new Promise(
       (resolve, reject) => {
-        const image =
-          new Image();
-
+        const image = new Image();
         const url =
           URL.createObjectURL(file);
 
@@ -162,60 +172,64 @@ export default function App() {
    * ==========================================
    */
 
-  function toggleDay(
-    fileIndex,
-    day
-  ) {
-    setSelectedDays(
-      (current) => {
-        const days =
-          current[fileIndex] || [];
+  function toggleDay(fileIndex, day) {
+    setSelectedDays((current) => {
+      const days =
+        current[fileIndex] || [];
 
-        const exists =
-          days.includes(day);
+      const exists =
+        days.includes(day);
 
-        const nextDays =
-          exists
-            ? days.filter(
-                (d) => d !== day
-              )
-            : [
-                ...days,
-                day,
-              ].sort(
-                (a, b) =>
-                  a - b
-              );
+      const nextDays =
+        exists
+          ? days.filter(
+              (d) => d !== day
+            )
+          : [...days, day].sort(
+              (a, b) => a - b
+            );
 
-        return {
-          ...current,
-
-          [fileIndex]:
-            nextDays,
-        };
-      }
-    );
+      return {
+        ...current,
+        [fileIndex]: nextDays,
+      };
+    });
   }
 
-  function clearDays(
-    fileIndex
+  function clearDays(fileIndex) {
+    setSelectedDays((current) => ({
+      ...current,
+      [fileIndex]: [],
+    }));
+  }
+
+  function selectWeekdays(
+    fileIndex,
+    weekdays
   ) {
+    const days = [];
+
+    for (
+      let day = 1;
+      day <= daysInMonth;
+      day++
+    ) {
+      if (
+        weekdays.includes(
+          getWeekday(day)
+        )
+      ) {
+        days.push(day);
+      }
+    }
+
     setSelectedDays(
       (current) => ({
         ...current,
-
-        [fileIndex]: [],
+        [fileIndex]: days,
       })
     );
   }
-
-  /*
-   * 曜日指定の補助ボタン
-   *
-   * 年月判定前なので、
-   * 今は単純な日付ボタンだけを使う。
-   * 後で曜日自動選択を追加できる。
-   */
 
   /*
    * ==========================================
@@ -261,15 +275,8 @@ export default function App() {
       image.height *
       getRowCenter(day);
 
-    /*
-     * 数字を中心に、
-     * 上下罫線をなるべく除外
-     */
-    let heightRatio = 0.62;
+    let heightRatio = 0.64;
 
-    /*
-     * 31日は下罫線が近いため
-     */
     if (day === 31) {
       heightRatio = 0.48;
     }
@@ -298,18 +305,14 @@ export default function App() {
 
     canvas.width =
       Math.max(
-        50,
-        Math.round(
-          sourceWidth
-        )
+        60,
+        Math.round(sourceWidth)
       );
 
     canvas.height =
       Math.max(
-        22,
-        Math.round(
-          sourceHeight
-        )
+        24,
+        Math.round(sourceHeight)
       );
 
     const ctx =
@@ -338,12 +341,10 @@ export default function App() {
 
     ctx.drawImage(
       image,
-
       sourceX,
       sourceY,
       sourceWidth,
       sourceHeight,
-
       0,
       0,
       canvas.width,
@@ -359,19 +360,14 @@ export default function App() {
    * ==========================================
    */
 
-  function grayscale(
-    source
-  ) {
+  function grayscale(source) {
     const canvas =
       document.createElement(
         "canvas"
       );
 
-    canvas.width =
-      source.width;
-
-    canvas.height =
-      source.height;
+    canvas.width = source.width;
+    canvas.height = source.height;
 
     const ctx =
       canvas.getContext(
@@ -382,11 +378,7 @@ export default function App() {
         }
       );
 
-    ctx.drawImage(
-      source,
-      0,
-      0
-    );
+    ctx.drawImage(source, 0, 0);
 
     const imageData =
       ctx.getImageData(
@@ -441,19 +433,17 @@ export default function App() {
 
     canvas.width =
       Math.max(
-        28,
+        30,
         Math.round(
-          source.width *
-          factor
+          source.width * factor
         )
       );
 
     canvas.height =
       Math.max(
-        15,
+        18,
         Math.round(
-          source.height *
-          factor
+          source.height * factor
         )
       );
 
@@ -507,11 +497,8 @@ export default function App() {
         "canvas"
       );
 
-    canvas.width =
-      source.width;
-
-    canvas.height =
-      source.height;
+    canvas.width = source.width;
+    canvas.height = source.height;
 
     const ctx =
       canvas.getContext(
@@ -522,11 +509,7 @@ export default function App() {
         }
       );
 
-    ctx.drawImage(
-      source,
-      0,
-      0
-    );
+    ctx.drawImage(source, 0, 0);
 
     const imageData =
       ctx.getImageData(
@@ -544,24 +527,17 @@ export default function App() {
       i < data.length;
       i += 4
     ) {
-      let value =
-        data[i];
+      let value = data[i];
 
       value =
-        (
-          value -
-          128
-        ) *
+        (value - 128) *
           amount +
         128;
 
       value =
         Math.max(
           0,
-          Math.min(
-            255,
-            value
-          )
+          Math.min(255, value)
         );
 
       data[i] = value;
@@ -594,11 +570,8 @@ export default function App() {
         "canvas"
       );
 
-    canvas.width =
-      source.width;
-
-    canvas.height =
-      source.height;
+    canvas.width = source.width;
+    canvas.height = source.height;
 
     const ctx =
       canvas.getContext(
@@ -609,11 +582,7 @@ export default function App() {
         }
       );
 
-    ctx.drawImage(
-      source,
-      0,
-      0
-    );
+    ctx.drawImage(source, 0, 0);
 
     const imageData =
       ctx.getImageData(
@@ -632,8 +601,7 @@ export default function App() {
       i += 4
     ) {
       const v =
-        data[i] <
-        value
+        data[i] < value
           ? 0
           : 255;
 
@@ -654,13 +622,134 @@ export default function App() {
 
   /*
    * ==========================================
-   * 拡大
+   * 縦罫線除去
    * ==========================================
    */
 
-  function upscale(
+  function removeVerticalRules(
+    source
+  ) {
+    const canvas =
+      document.createElement(
+        "canvas"
+      );
+
+    canvas.width = source.width;
+    canvas.height = source.height;
+
+    const ctx =
+      canvas.getContext(
+        "2d",
+        {
+          willReadFrequently:
+            true,
+        }
+      );
+
+    ctx.drawImage(source, 0, 0);
+
+    const imageData =
+      ctx.getImageData(
+        0,
+        0,
+        canvas.width,
+        canvas.height
+      );
+
+    const data =
+      imageData.data;
+
+    for (
+      let x = 0;
+      x < canvas.width;
+      x++
+    ) {
+      let dark = 0;
+
+      for (
+        let y = 0;
+        y < canvas.height;
+        y++
+      ) {
+        const index =
+          (
+            y *
+              canvas.width +
+            x
+          ) * 4;
+
+        if (
+          data[index] < 80
+        ) {
+          dark++;
+        }
+      }
+
+      /*
+       * 高さの80%以上が暗い列なら
+       * 縦罫線の可能性が高い
+       */
+      if (
+        dark /
+          canvas.height >
+        0.80
+      ) {
+        for (
+          let dx = -2;
+          dx <= 2;
+          dx++
+        ) {
+          const px =
+            x + dx;
+
+          if (
+            px < 0 ||
+            px >=
+              canvas.width
+          ) {
+            continue;
+          }
+
+          for (
+            let y = 0;
+            y <
+            canvas.height;
+            y++
+          ) {
+            const index =
+              (
+                y *
+                  canvas.width +
+                px
+              ) * 4;
+
+            data[index] = 255;
+            data[index + 1] = 255;
+            data[index + 2] = 255;
+            data[index + 3] = 255;
+          }
+        }
+      }
+    }
+
+    ctx.putImageData(
+      imageData,
+      0,
+      0
+    );
+
+    return canvas;
+  }
+
+  /*
+   * ==========================================
+   * 白余白追加
+   * ==========================================
+   */
+
+  function addPadding(
     source,
-    scale = 3
+    padding = 14
   ) {
     const canvas =
       document.createElement(
@@ -668,12 +757,54 @@ export default function App() {
       );
 
     canvas.width =
-      source.width *
-      scale;
+      source.width +
+      padding * 2;
 
     canvas.height =
-      source.height *
-      scale;
+      source.height +
+      padding * 2;
+
+    const ctx =
+      canvas.getContext("2d");
+
+    ctx.fillStyle = "#fff";
+
+    ctx.fillRect(
+      0,
+      0,
+      canvas.width,
+      canvas.height
+    );
+
+    ctx.drawImage(
+      source,
+      padding,
+      padding
+    );
+
+    return canvas;
+  }
+
+  /*
+   * ==========================================
+   * 拡大
+   * ==========================================
+   */
+
+  function upscale(
+    source,
+    scale = 4
+  ) {
+    const canvas =
+      document.createElement(
+        "canvas"
+      );
+
+    canvas.width =
+      source.width * scale;
+
+    canvas.height =
+      source.height * scale;
 
     const ctx =
       canvas.getContext("2d");
@@ -704,15 +835,7 @@ export default function App() {
     return canvas;
   }
 
-  /*
-   * ==========================================
-   * Canvas → Blob
-   * ==========================================
-   */
-
-  function canvasToBlob(
-    canvas
-  ) {
+  function canvasToBlob(canvas) {
     return new Promise(
       (resolve, reject) => {
         canvas.toBlob(
@@ -771,32 +894,31 @@ export default function App() {
 
   /*
    * ==========================================
-   * Tesseract 1回
+   * OCR 1回
    * ==========================================
    */
 
   async function recognizeVariant(
     worker,
     canvas,
-    key
+    key,
+    psm
   ) {
     const blob =
-      await canvasToBlob(
-        canvas
-      );
+      await canvasToBlob(canvas);
 
     await worker.setParameters({
       tessedit_char_whitelist:
-        "0123456789,",
+        "0123456789",
 
-      /*
-       * 1行の数字として認識
-       */
       tessedit_pageseg_mode:
-        "7",
+        String(psm),
 
       user_defined_dpi:
         "300",
+
+      preserve_interword_spaces:
+        "0",
     });
 
     const result =
@@ -816,14 +938,240 @@ export default function App() {
           result.data.confidence ||
           0
         ),
+
+      psm,
+    };
+  }
+
+  /*
+   * ==========================================
+   * 候補の自然さを採点
+   * ==========================================
+   */
+
+  function plausibilityScore(
+    value,
+    key
+  ) {
+    if (!value) {
+      return -100;
+    }
+
+    const n =
+      Number(value);
+
+    if (
+      !Number.isFinite(n)
+    ) {
+      return -100;
+    }
+
+    let score = 0;
+
+    if (
+      key === "patients"
+    ) {
+      if (
+        value.length === 2
+      ) {
+        score += 35;
+      } else if (
+        value.length === 1
+      ) {
+        score += 15;
+      }
+
+      if (
+        n >= 1 &&
+        n <= 40
+      ) {
+        score += 35;
+      } else if (
+        n <= 60
+      ) {
+        score += 10;
+      } else {
+        score -= 40;
+      }
+
+      return score;
+    }
+
+    /*
+     * 保険・介護
+     */
+
+    if (
+      value.length === 5
+    ) {
+      score += 45;
+    } else if (
+      value.length === 4
+    ) {
+      score += 35;
+    } else if (
+      value.length === 3
+    ) {
+      score += 5;
+    } else {
+      score -= 35;
+    }
+
+    if (
+      n >= 1000 &&
+      n <= 50000
+    ) {
+      score += 30;
+    } else if (
+      n >= 100 &&
+      n < 1000
+    ) {
+      score += 5;
+    } else {
+      score -= 30;
+    }
+
+    return score;
+  }
+
+  /*
+   * ==========================================
+   * 最良候補を選択
+   * ==========================================
+   */
+
+  function selectBestCandidate(
+    attempts,
+    key
+  ) {
+    const grouped = {};
+
+    for (
+      const attempt of attempts
+    ) {
+      if (!attempt.value) {
+        continue;
+      }
+
+      if (
+        !grouped[
+          attempt.value
+        ]
+      ) {
+        grouped[
+          attempt.value
+        ] = {
+          value:
+            attempt.value,
+
+          count: 0,
+
+          confidence: 0,
+        };
+      }
+
+      grouped[
+        attempt.value
+      ].count++;
+
+      grouped[
+        attempt.value
+      ].confidence +=
+        attempt.confidence;
+    }
+
+    const candidates =
+      Object.values(
+        grouped
+      );
+
+    if (
+      !candidates.length
+    ) {
+      return {
+        value: "",
+        warning: true,
+        score: -100,
+      };
+    }
+
+    for (
+      const candidate of
+      candidates
+    ) {
+      const avgConfidence =
+        candidate.confidence /
+        candidate.count;
+
+      candidate.score =
+        plausibilityScore(
+          candidate.value,
+          key
+        ) +
+        candidate.count * 25 +
+        avgConfidence * 0.15;
+    }
+
+    candidates.sort(
+      (a, b) =>
+        b.score -
+        a.score
+    );
+
+    const best =
+      candidates[0];
+
+    /*
+     * 要確認判定
+     */
+
+    let warning = false;
+
+    if (
+      best.count < 2
+    ) {
+      warning = true;
+    }
+
+    if (
+      plausibilityScore(
+        best.value,
+        key
+      ) < 30
+    ) {
+      warning = true;
+    }
+
+    /*
+     * 2位との差が小さい場合も怪しい
+     */
+
+    if (
+      candidates.length > 1
+    ) {
+      const gap =
+        best.score -
+        candidates[1].score;
+
+      if (gap < 15) {
+        warning = true;
+      }
+    }
+
+    return {
+      value:
+        best.value,
+
+      warning,
+
+      score:
+        best.score,
     };
   }
 
   /*
    * ==========================================
    * セルOCR
-   *
-   * 3パターンで読み、多数決
    * ==========================================
    */
 
@@ -843,183 +1191,152 @@ export default function App() {
     const gray =
       grayscale(raw);
 
-    const reduced1 =
+    /*
+     * 罫線を先に除去
+     */
+
+    const cleanGray =
+      removeVerticalRules(
+        gray
+      );
+
+    /*
+     * 4種類の画像
+     */
+
+    const originalVariant =
+      upscale(
+        addPadding(
+          increaseContrast(
+            cleanGray,
+            1.35
+          ),
+          10
+        ),
+        3
+      );
+
+    const reduced =
       reduceMoire(
-        gray,
+        cleanGray,
         0.72
       );
 
-    const reduced2 =
-      reduceMoire(
-        gray,
-        0.64
+    const contrastVariant =
+      upscale(
+        addPadding(
+          increaseContrast(
+            reduced,
+            1.55
+          ),
+          10
+        ),
+        4
       );
 
-    const variants = [
-      /*
-       * パターン1
-       * コントラスト
-       */
+    const binary160 =
       upscale(
-        increaseContrast(
-          reduced1,
-          1.55
+        addPadding(
+          threshold(
+            reduced,
+            160
+          ),
+          10
         ),
-        3
-      ),
+        4
+      );
 
-      /*
-       * パターン2
-       * 2値化弱め
-       */
+    const binary180 =
       upscale(
-        threshold(
-          reduced2,
-          160
+        addPadding(
+          threshold(
+            reduced,
+            180
+          ),
+          10
         ),
-        3
-      ),
+        4
+      );
 
-      /*
-       * パターン3
-       * 2値化強め
-       */
-      upscale(
-        threshold(
-          reduced1,
-          180
-        ),
-        3
-      ),
+    /*
+     * PSMも変える
+     */
+
+    const configs = [
+      {
+        canvas:
+          originalVariant,
+        psm: 7,
+      },
+
+      {
+        canvas:
+          originalVariant,
+        psm: 8,
+      },
+
+      {
+        canvas:
+          contrastVariant,
+        psm: 7,
+      },
+
+      {
+        canvas:
+          contrastVariant,
+        psm: 13,
+      },
+
+      {
+        canvas:
+          binary160,
+        psm: 8,
+      },
+
+      {
+        canvas:
+          binary180,
+        psm: 13,
+      },
     ];
 
     const attempts = [];
 
     for (
-      const variant of
-      variants
+      const config of
+      configs
     ) {
       attempts.push(
         await recognizeVariant(
           worker,
-          variant,
-          key
+          config.canvas,
+          key,
+          config.psm
         )
       );
     }
 
-    /*
-     * 多数決
-     */
-
-    const counts = {};
-
-    for (
-      const attempt of
-      attempts
-    ) {
-      if (!attempt.value) {
-        continue;
-      }
-
-      counts[
-        attempt.value
-      ] =
-        (
-          counts[
-            attempt.value
-          ] || 0
-        ) + 1;
-    }
-
-    const sorted =
-      Object.entries(
-        counts
-      ).sort(
-        (a, b) =>
-          b[1] - a[1]
+    const best =
+      selectBestCandidate(
+        attempts,
+        key
       );
 
-    const value =
-      sorted[0]?.[0] || "";
-
-    const agreement =
-      sorted[0]?.[1] || 0;
-
-    /*
-     * ======================================
-     * 要確認判定
-     * ======================================
-     */
-
-    let warning = false;
-
-    /*
-     * 空欄
-     */
-    if (!value) {
-      warning = true;
-    }
-
-    /*
-     * 3回中2回以上一致しない
-     */
-    if (
-      value &&
-      agreement < 2
-    ) {
-      warning = true;
-    }
-
-    const number =
-      Number(value);
-
-    /*
-     * 実患者
-     */
-    if (
-      key === "patients" &&
-      (
-        !value ||
-        number < 1 ||
-        number > 60
-      )
-    ) {
-      warning = true;
-    }
-
-    /*
-     * 点数
-     */
-    if (
-      key !== "patients" &&
-      (
-        !value ||
-        number < 100
-      )
-    ) {
-      warning = true;
-    }
-
     return {
-      value,
+      value:
+        best.value,
 
-      warning,
-
-      agreement,
+      warning:
+        best.warning,
 
       attempts:
         attempts.map(
           (item) =>
-            item.value ||
-            "空"
+            item.value
+              ? `${item.value}(P${item.psm})`
+              : `空(P${item.psm})`
         ),
 
-      /*
-       * 人間確認用なので
-       * OCR前処理画像ではなく
-       * 元の切り抜きを表示
-       */
       preview:
         raw.toDataURL(
           "image/jpeg",
@@ -1030,7 +1347,7 @@ export default function App() {
 
   /*
    * ==========================================
-   * 選択日をOCR
+   * OCR開始
    * ==========================================
    */
 
@@ -1047,8 +1364,7 @@ export default function App() {
         selectedDays
       ).reduce(
         (sum, days) =>
-          sum +
-          days.length,
+          sum + days.length,
         0
       );
 
@@ -1135,7 +1451,6 @@ export default function App() {
             },
 
             previews: {},
-
             attempts: {},
           };
 
@@ -1193,9 +1508,6 @@ export default function App() {
         }
       }
 
-      /*
-       * 日付順
-       */
       output.sort(
         (a, b) => {
           if (
@@ -1270,8 +1582,7 @@ export default function App() {
         current.map(
           (row, index) => {
             if (
-              index !==
-              rowIndex
+              index !== rowIndex
             ) {
               return row;
             }
@@ -1285,10 +1596,6 @@ export default function App() {
               warnings: {
                 ...row.warnings,
 
-                /*
-                 * 人が入力したら
-                 * 要確認解除
-                 */
                 [key]:
                   false,
               },
@@ -1300,7 +1607,7 @@ export default function App() {
 
   /*
    * ==========================================
-   * 要確認数
+   * 警告数
    * ==========================================
    */
 
@@ -1333,10 +1640,7 @@ export default function App() {
 
   /*
    * ==========================================
-   * 日付ごとに集約
-   *
-   * 複数画像で同じ日があれば
-   * 合算する
+   * 日付ごとに合算
    * ==========================================
    */
 
@@ -1345,8 +1649,7 @@ export default function App() {
       const map = {};
 
       for (
-        const row of
-        results
+        const row of results
       ) {
         if (!map[row.day]) {
           map[row.day] = {
@@ -1387,16 +1690,9 @@ export default function App() {
         map
       ).sort(
         (a, b) =>
-          a.day -
-          b.day
+          a.day - b.day
       );
     }, [results]);
-
-  /*
-   * ==========================================
-   * 合計
-   * ==========================================
-   */
 
   const totals =
     useMemo(() => {
@@ -1442,6 +1738,11 @@ export default function App() {
           日付:
             `${row.day}日`,
 
+          曜日:
+            getWeekdayLabel(
+              row.day
+            ),
+
           実患者:
             row.patients,
 
@@ -1457,14 +1758,9 @@ export default function App() {
         })
       );
 
-    /*
-     * 合計行
-     */
-
     data.push({
-      日付:
-        "合計",
-
+      日付: "合計",
+      曜日: "",
       実患者:
         totals.patients,
 
@@ -1484,7 +1780,8 @@ export default function App() {
       );
 
     worksheet["!cols"] = [
-      { wch: 10 },
+      { wch: 9 },
+      { wch: 7 },
       { wch: 12 },
       { wch: 16 },
       { wch: 16 },
@@ -1497,18 +1794,18 @@ export default function App() {
     XLSX.utils.book_append_sheet(
       workbook,
       worksheet,
-      "診療日別集計"
+      `${year}年${month}月`
     );
 
     XLSX.writeFile(
       workbook,
-      "診療日別集計.xlsx"
+      `${year}年${month}月_診療日別集計.xlsx`
     );
   }
 
   /*
    * ==========================================
-   * 表示
+   * UI
    * ==========================================
    */
 
@@ -1536,13 +1833,10 @@ export default function App() {
         </header>
 
         <div className="privacy">
-          🔒 画像・OCR処理は端末内で行われ、
-          外部サーバーへ送信されません
+          🔒 画像・OCR処理は端末内で行われます
         </div>
 
-        {/* ==============================
-            STEP 1
-        ============================== */}
+        {/* STEP 1 */}
 
         <section className="card">
 
@@ -1551,12 +1845,70 @@ export default function App() {
           </span>
 
           <h2>
-            集計画像を選択
+            月と画像を選択
           </h2>
 
-          <p className="description">
-            同じ月の画像を複数選択できます。
-          </p>
+          <div
+            style={{
+              display: "flex",
+              gap: "8px",
+              marginBottom: "16px",
+            }}
+          >
+
+            <select
+              value={year}
+              onChange={(e) =>
+                setYear(
+                  Number(
+                    e.target.value
+                  )
+                )
+              }
+              style={selectStyle}
+            >
+              {Array.from(
+                { length: 7 },
+                (_, i) =>
+                  now.getFullYear() -
+                  3 +
+                  i
+              ).map((y) => (
+                <option
+                  key={y}
+                  value={y}
+                >
+                  {y}年
+                </option>
+              ))}
+            </select>
+
+            <select
+              value={month}
+              onChange={(e) =>
+                setMonth(
+                  Number(
+                    e.target.value
+                  )
+                )
+              }
+              style={selectStyle}
+            >
+              {Array.from(
+                { length: 12 },
+                (_, i) =>
+                  i + 1
+              ).map((m) => (
+                <option
+                  key={m}
+                  value={m}
+                >
+                  {m}月
+                </option>
+              ))}
+            </select>
+
+          </div>
 
           <input
             ref={inputRef}
@@ -1564,16 +1916,12 @@ export default function App() {
             type="file"
             accept="image/*"
             multiple
-            onChange={
-              handleFiles
-            }
+            onChange={handleFiles}
           />
 
           <button
             className="select-button"
-            disabled={
-              isAnalyzing
-            }
+            disabled={isAnalyzing}
             onClick={() =>
               inputRef.current?.click()
             }
@@ -1599,7 +1947,6 @@ export default function App() {
                     style={{
                       marginTop:
                         "5px",
-
                       fontSize:
                         "12px",
                     }}
@@ -1614,9 +1961,7 @@ export default function App() {
 
         </section>
 
-        {/* ==============================
-            STEP 2
-        ============================== */}
+        {/* STEP 2 */}
 
         {images.length > 0 && (
           <section className="card">
@@ -1630,9 +1975,7 @@ export default function App() {
             </h2>
 
             <p className="description">
-              各画像について、
-              診療した日をタップしてください。
-              青色が選択中です。
+              カレンダー上で診療日をタップしてください。
             </p>
 
             {files.map(
@@ -1648,53 +1991,63 @@ export default function App() {
 
                 return (
                   <div
-                    key={
-                      fileIndex
-                    }
+                    key={fileIndex}
                     style={{
                       marginTop:
                         fileIndex
-                          ? "32px"
+                          ? "34px"
                           : "15px",
                     }}
                   >
+
+                    <strong>
+                      {file.name}
+                    </strong>
 
                     <div
                       style={{
                         display:
                           "flex",
-
-                        justifyContent:
-                          "space-between",
-
-                        alignItems:
-                          "center",
-
-                        gap:
+                        gap: "6px",
+                        marginTop:
                           "10px",
-
                         marginBottom:
-                          "10px",
+                          "12px",
+                        flexWrap:
+                          "wrap",
                       }}
                     >
 
-                      <strong
-                        style={{
-                          fontSize:
-                            "14px",
-                        }}
+                      <button
+                        style={miniButton}
+                        onClick={() =>
+                          selectWeekdays(
+                            fileIndex,
+                            [1, 2, 4]
+                          )
+                        }
                       >
-                        {file.name}
-                      </strong>
+                        月・火・木
+                      </button>
 
                       <button
+                        style={miniButton}
+                        onClick={() =>
+                          selectWeekdays(
+                            fileIndex,
+                            [3, 5]
+                          )
+                        }
+                      >
+                        水・金
+                      </button>
+
+                      <button
+                        style={miniButton}
                         onClick={() =>
                           clearDays(
                             fileIndex
                           )
-                        }
-                        style={
-                          miniButton
                         }
                       >
                         クリア
@@ -1704,12 +2057,10 @@ export default function App() {
 
                     <div
                       style={{
-                        marginBottom:
-                          "10px",
-
                         fontSize:
                           "12px",
-
+                        marginBottom:
+                          "10px",
                         color:
                           "#64748b",
                       }}
@@ -1717,10 +2068,49 @@ export default function App() {
                       選択：
                       {days.length}
                       日
-                      {days.length
-                        ? `（${days.join("・")}）`
-                        : ""}
                     </div>
+
+                    {/* 曜日ヘッダー */}
+
+                    <div
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns:
+                          "repeat(7, 1fr)",
+                        gap: "5px",
+                        marginBottom:
+                          "5px",
+                      }}
+                    >
+                      {WEEKDAYS.map(
+                        (
+                          label,
+                          index
+                        ) => (
+                          <div
+                            key={label}
+                            style={{
+                              textAlign:
+                                "center",
+                              fontSize:
+                                "12px",
+                              fontWeight:
+                                700,
+                              color:
+                                index === 0
+                                  ? "#dc2626"
+                                  : index === 6
+                                  ? "#2563eb"
+                                  : "#475569",
+                            }}
+                          >
+                            {label}
+                          </div>
+                        )
+                      )}
+                    </div>
+
+                    {/* カレンダー */}
 
                     <div
                       style={{
@@ -1730,21 +2120,32 @@ export default function App() {
                         gridTemplateColumns:
                           "repeat(7, 1fr)",
 
-                        gap:
-                          "6px",
+                        gap: "5px",
                       }}
                     >
 
                       {Array.from(
                         {
                           length:
-                            31,
+                            firstWeekday,
+                        }
+                      ).map(
+                        (_, i) => (
+                          <div
+                            key={
+                              `blank-${i}`
+                            }
+                          />
+                        )
+                      )}
+
+                      {Array.from(
+                        {
+                          length:
+                            daysInMonth,
                         },
 
-                        (
-                          _,
-                          i
-                        ) =>
+                        (_, i) =>
                           i + 1
                       ).map(
                         (day) => {
@@ -1754,11 +2155,14 @@ export default function App() {
                               day
                             );
 
+                          const wd =
+                            getWeekday(
+                              day
+                            );
+
                           return (
                             <button
-                              key={
-                                day
-                              }
+                              key={day}
                               onClick={() =>
                                 toggleDay(
                                   fileIndex,
@@ -1766,26 +2170,34 @@ export default function App() {
                                 )
                               }
                               style={{
+                                aspectRatio:
+                                  "1 / 1",
+
                                 border:
                                   selected
                                     ? "2px solid #2563eb"
-                                    : "1px solid #cbd5e1",
+                                    : "1px solid #d4dbe4",
 
                                 background:
                                   selected
                                     ? "#dbeafe"
+                                    : wd === 0
+                                    ? "#fff5f5"
+                                    : wd === 6
+                                    ? "#eff6ff"
                                     : "#fff",
 
                                 color:
                                   selected
                                     ? "#1d4ed8"
-                                    : "#334155",
+                                    : wd === 0
+                                    ? "#dc2626"
+                                    : wd === 6
+                                    ? "#2563eb"
+                                    : "#1e293b",
 
                                 borderRadius:
                                   "9px",
-
-                                padding:
-                                  "9px 2px",
 
                                 fontSize:
                                   "15px",
@@ -1793,7 +2205,9 @@ export default function App() {
                                 fontWeight:
                                   selected
                                     ? 700
-                                    : 400,
+                                    : 500,
+
+                                padding: 0,
                               }}
                             >
                               {day}
@@ -1812,9 +2226,7 @@ export default function App() {
           </section>
         )}
 
-        {/* ==============================
-            STEP 3
-        ============================== */}
+        {/* STEP 3 */}
 
         {images.length > 0 && (
           <section className="card">
@@ -1828,14 +2240,13 @@ export default function App() {
             </h2>
 
             <p className="description">
-              選択した診療日だけを読み取ります。
+              複数の画像処理とOCR方式を使って
+              数字候補を比較します。
             </p>
 
             <button
               className="select-button"
-              disabled={
-                isAnalyzing
-              }
+              disabled={isAnalyzing}
               onClick={
                 analyzeSelectedDays
               }
@@ -1868,10 +2279,8 @@ export default function App() {
                   style={{
                     marginTop:
                       "5px",
-
                     textAlign:
                       "right",
-
                     fontSize:
                       "12px",
                   }}
@@ -1901,9 +2310,7 @@ export default function App() {
           </section>
         )}
 
-        {/* ==============================
-            STEP 4
-        ============================== */}
+        {/* STEP 4 */}
 
         {results.length > 0 && (
           <section className="card">
@@ -1915,11 +2322,6 @@ export default function App() {
             <h2>
               読み取り結果を確認
             </h2>
-
-            <p className="description">
-              黄色の項目は要確認です。
-              元画像の数字を見ながら修正してください。
-            </p>
 
             <div
               style={{
@@ -1957,9 +2359,7 @@ export default function App() {
                 rowIndex
               ) => (
                 <div
-                  key={
-                    row.id
-                  }
+                  key={row.id}
                   style={{
                     border:
                       "1px solid #dbe3ea",
@@ -1991,7 +2391,11 @@ export default function App() {
                           "18px",
                       }}
                     >
-                      {row.day}日
+                      {row.day}日（
+                      {getWeekdayLabel(
+                        row.day
+                      )}
+                      ）
                     </strong>
 
                     <div
@@ -2019,16 +2423,13 @@ export default function App() {
                     (key) => {
 
                       const warning =
-                        row
-                          .warnings[
+                        row.warnings[
                           key
                         ];
 
                       return (
                         <div
-                          key={
-                            key
-                          }
+                          key={key}
                           style={{
                             padding:
                               "12px",
@@ -2065,8 +2466,6 @@ export default function App() {
                               " ⚠️ 要確認"}
                           </div>
 
-                          {/* 元画像 */}
-
                           <div
                             style={{
                               background:
@@ -2088,8 +2487,7 @@ export default function App() {
 
                             <img
                               src={
-                                row
-                                  .previews[
+                                row.previews[
                                   key
                                 ]
                               }
@@ -2111,8 +2509,6 @@ export default function App() {
 
                           </div>
 
-                          {/* 修正欄 */}
-
                           <input
                             type="text"
                             inputMode="numeric"
@@ -2125,8 +2521,7 @@ export default function App() {
                                 updateCell(
                                   rowIndex,
                                   key,
-                                  e
-                                    .target
+                                  e.target
                                     .value
                                 )
                             }
@@ -2172,12 +2567,14 @@ export default function App() {
 
                               marginTop:
                                 "5px",
+
+                              lineHeight:
+                                "1.5",
                             }}
                           >
                             OCR候補：
                             {
-                              row
-                                .attempts[
+                              row.attempts[
                                 key
                               ].join(
                                 " / "
@@ -2197,9 +2594,7 @@ export default function App() {
           </section>
         )}
 
-        {/* ==============================
-            STEP 5
-        ============================== */}
+        {/* STEP 5 */}
 
         {results.length > 0 && (
           <section className="card">
@@ -2231,9 +2626,7 @@ export default function App() {
               <div>
                 出勤日数：
                 <strong>
-                  {
-                    mergedRows.length
-                  }
+                  {mergedRows.length}
                   日
                 </strong>
               </div>
@@ -2241,9 +2634,7 @@ export default function App() {
               <div>
                 実患者：
                 <strong>
-                  {
-                    totals.patients
-                  }
+                  {totals.patients}
                   人
                 </strong>
               </div>
@@ -2316,11 +2707,27 @@ const miniButton = {
     "7px",
 
   padding:
-    "6px 10px",
+    "7px 10px",
 
   fontSize:
     "11px",
+};
 
-  whiteSpace:
-    "nowrap",
+const selectStyle = {
+  flex: 1,
+
+  padding:
+    "10px",
+
+  border:
+    "1px solid #cbd5e1",
+
+  borderRadius:
+    "9px",
+
+  background:
+    "#fff",
+
+  fontSize:
+    "16px",
 };
